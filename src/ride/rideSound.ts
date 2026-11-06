@@ -20,6 +20,10 @@ const ENGINE: Record<Exclude<EngineSound, "bicycle">, { idle: number; perKmh: nu
   sport: { idle: 55, perKmh: 0.55, gear: 34, bright: 16, putt: 0.2, vol: 1.15 },
   scooter: { idle: 48, perKmh: 1.1, gear: 0, bright: 7, putt: 0.25, vol: 0.85 },
   cruiser: { idle: 22, perKmh: 0.3, gear: 26, bright: 6, putt: 0.65, vol: 1.2 },
+  hyper: { idle: 72, perKmh: 0.62, gear: 48, bright: 24, putt: 0.12, vol: 1.2 },
+  superbike: { idle: 64, perKmh: 0.55, gear: 52, bright: 20, putt: 0.15, vol: 1.25 },
+  naked: { idle: 44, perKmh: 0.5, gear: 40, bright: 14, putt: 0.35, vol: 1.15 },
+  adventure: { idle: 36, perKmh: 0.45, gear: 36, bright: 10, putt: 0.5, vol: 1.1 },
 };
 
 export interface SoundContext {
@@ -181,7 +185,7 @@ export class RideSound {
       const load = Math.max(0, Math.min(1, sc.a / 3));
       // Fake gearbox: rpm climbs within each gear band, then drops (scooters are CVT: smooth rise).
       const gearPos = e.gear ? (kmh % e.gear) / e.gear : 0;
-      const f = e.idle + gearPos * e.idle * 1.3 + Math.min(kmh, 170) * e.perKmh;
+      const f = e.idle + gearPos * e.idle * 1.3 + Math.min(kmh, 300) * e.perKmh;
       this.engine.osc1.frequency.setTargetAtTime(f, now, 0.07);
       this.engine.osc2.frequency.setTargetAtTime(f * 0.5, now, 0.07);
       this.engine.amOsc.frequency.setTargetAtTime(f / 2, now, 0.07);
@@ -271,6 +275,52 @@ export class RideSound {
       }
       t += len + gap;
     }
+  }
+
+  /** Crash: low thud, a few metallic clangs and a scraping slide that fades with speed. */
+  crash(impactKmh: number) {
+    const ctx = this.ctx;
+    if (!ctx || ctx.state !== "running" || !this.running) return;
+    const t = ctx.currentTime + 0.01;
+    const hard = Math.min(1, impactKmh / 60);
+    // thud
+    const thud = ctx.createOscillator();
+    thud.type = "sine";
+    thud.frequency.setValueAtTime(110, t);
+    thud.frequency.exponentialRampToValueAtTime(40, t + 0.25);
+    const tg = ctx.createGain();
+    tg.gain.setValueAtTime(0.35 * (0.4 + hard), t);
+    tg.gain.exponentialRampToValueAtTime(0.001, t + 0.35);
+    thud.connect(tg).connect(this.master);
+    thud.start(t);
+    thud.stop(t + 0.4);
+    // clangs
+    for (let i = 0; i < 4; i++) {
+      const at = t + 0.03 + i * (0.06 + Math.random() * 0.08);
+      const o = ctx.createOscillator();
+      o.type = "triangle";
+      o.frequency.value = 900 + Math.random() * 2600;
+      const g = ctx.createGain();
+      g.gain.setValueAtTime(0.06 + hard * 0.06, at);
+      g.gain.exponentialRampToValueAtTime(0.0005, at + 0.25);
+      o.connect(g).connect(this.master);
+      o.start(at);
+      o.stop(at + 0.3);
+    }
+    // scrape
+    const src = ctx.createBufferSource();
+    src.buffer = this.noiseBuf;
+    const bp = ctx.createBiquadFilter();
+    bp.type = "bandpass";
+    bp.frequency.value = 1800;
+    bp.Q.value = 0.8;
+    const sg = ctx.createGain();
+    const dur = 0.4 + hard * 1.4;
+    sg.gain.setValueAtTime(0.14 * hard + 0.03, t + 0.05);
+    sg.gain.exponentialRampToValueAtTime(0.0005, t + dur);
+    src.connect(bp).connect(sg).connect(this.master);
+    src.start(t + 0.05, Math.random());
+    src.stop(t + dur + 0.05);
   }
 
   /** A honk from a real nearby vehicle (pan -1..1, distance in metres). */

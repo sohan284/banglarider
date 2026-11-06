@@ -31,6 +31,7 @@ export interface AreaConfig {
   data: {
     roads: string;
     buildings: string;
+    landuse: string;
     landmarks: string;
     meta: string;
   };
@@ -41,6 +42,7 @@ function dataFiles(id: string): AreaConfig["data"] {
   return {
     roads: `${base}/roads.geojson`,
     buildings: `${base}/buildings.geojson`,
+    landuse: `${base}/landuse.geojson`,
     landmarks: `${base}/landmarks.json`,
     meta: `${base}/meta.json`,
   };

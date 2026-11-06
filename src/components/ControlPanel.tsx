@@ -42,6 +42,9 @@ interface Props {
   onShare: () => void;
 }
 
+const NEXT_MODE: Record<MapMode, MapMode> = { diorama: "map", map: "simple", simple: "diorama" };
+const MODE_LABEL = { diorama: "viewDiorama", map: "viewMap", simple: "viewSimple" } as const;
+
 export const CATEGORY_ICON: Record<LandmarkCategory, string> = {
   circle: "◎",
   park: "♣",
@@ -77,11 +80,11 @@ export default function ControlPanel(p: Props) {
         {p.canUse3D && p.mode && (
           <button
             type="button"
-            onClick={() => p.onMode(p.mode === "map" ? "simple" : "map")}
+            onClick={() => p.onMode(NEXT_MODE[p.mode!])}
             className="btn-chip"
-            aria-label={`${t("viewLabel", lang)}: ${t(p.mode === "map" ? "viewMap" : "viewSimple", lang)}`}
+            aria-label={`${t("viewLabel", lang)}: ${t(MODE_LABEL[p.mode], lang)}. ${t("viewSwitchTo", lang, { mode: t(MODE_LABEL[NEXT_MODE[p.mode]], lang) })}`}
           >
-            {t(p.mode === "map" ? "viewSimple" : "viewMap", lang)}
+            {t(MODE_LABEL[p.mode], lang)} ▾
           </button>
         )}
         <button

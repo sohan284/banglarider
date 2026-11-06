@@ -37,6 +37,7 @@ The generated area data in `public/data/gulshan/` is committed, so you don't nee
 | File | Contents |
 |---|---|
 | `roads.geojson` | Routable road centre-lines: `name`, `name_bn`, `highway`, `oneway` (1 / -1 / 0), `motor`, `bike`, `bike_contraflow` |
+| `landuse.geojson` | Water (lakes), parks, pitches and grass polygons, for the 3D city and ride views |
 | `buildings.geojson` | Footprints with height `h` (and `mh` min-height) in metres. Height comes from `height`, then `building:levels × 3 m`, then a default of **3 floors × 3 m = 9 m** |
 | `landmarks.json` | ~25 notable places with English + Bangla names and a `verify` list of caveats |
 | `meta.json` | OSM timestamp, counts, file sizes |
@@ -98,6 +99,25 @@ The full list is in `public/data/gulshan/landmarks.json` (the `verify` field).
 6. **Directions:** consecutive segments are grouped by road name, very short pieces are merged, and turn angles become left / right / slight / sharp / U-turn instructions.
 7. **Time:** the estimate uses average Dhaka traffic speeds: motorcycle **18 km/h**, bicycle **12 km/h** (`VEHICLES` in `routing.ts`).
 
+## 3D city (start screen)
+
+The default view is a stylised 3D "diorama" of the whole area.
+
+**What's in it**
+- **Buildings:** all ~22,800 real footprints at their OSM heights, with pastel walls, varied roofs (concrete, slate, terracotta, green), water tanks and solar panels.
+- **Roads:** dark asphalt with centre markings.
+- **Water and green:** the Banani–Gulshan lake and other water with sandy shorelines, plus parks and pitches.
+- **Trees:** ~9,000 round and conifer trees along streets and in parks.
+- **Landmarks:** numbered pill labels with a category line ("CIRCLE", "MARKET"…) and a soft light beam. Labels hide automatically when they would overlap.
+- **Look:** sun shadows, plus ambient occlusion on capable devices.
+
+**Using it**
+- **Camera:** drag to pan, scroll or pinch to zoom (toward the cursor), right-drag or two-finger twist to rotate. The ➕ ➖ ⤢ buttons do the same from the keyboard.
+- **Choosing places:** tap a label or the ground to set the start or destination. The route appears as a glowing green line with pins that stay readable at any zoom.
+- **Route and directions:** the camera glides to fit the route, and to a step when you pick it from the directions.
+- **Other views:** the view button switches between **3D city → Street map (MapLibre) → Simple map**. The choice is remembered, and low-end, reduced-motion and no-WebGL devices still start on the simple map.
+- **During a ride:** the 3D city pauses, so only one 3D scene uses the GPU.
+
 ## Ride mode
 
 Press **Ride** after choosing a route. The ride code and three.js (~930 KB uncompressed) download only at that moment; the first page load never includes them.
@@ -115,12 +135,60 @@ Press **Ride** after choosing a route. The ride code and three.js (~930 KB uncom
   - street lamps that glow at night
   - electric poles with sagging and tangled overhead wires
   - Bangla shop signs near markets, and roadside billboards
-- **Speed humps:** yellow and black, on straight stretches of the route.
+- **Speed humps:** yellow and black, on straight stretches of side streets (not on main avenues).
+- **Traffic** (simulated, not live data):
+  - cycle rickshaws with their pullers, green CNG auto-rickshaws, cars, microbuses, buses and motorbikes
+  - parked rickshaws, cars and CNGs along side streets
+  - Vehicles drive on the **left**, obey one-way streets, keep their distance from the vehicle ahead, slow for turns and pick a road at each junction.
+  - They stop behind you if you block them, and honk if you keep them waiting.
+  - Vehicles respawn around you, so the roads stay busy wherever you ride.
+  - About 120 moving vehicles plus 60 parked on High; 55 plus 25 on Low.
+- **Traffic lights** where main roads cross, such as the Gulshan circles and the avenue crossings (about 5–6 around a typical route):
+  - Poles stand on the left of each approach.
+  - Two-phase cycle: main axis green 16 s, amber 3 s, all-red 2 s, then the crossing roads get their turn.
+  - Traffic stops at red. In auto-ride your rider stops too, and the screen shows a 🚦 pill with the light, a countdown and the distance to the stop line.
+  - Screen readers hear "Red light ahead".
+- **Pedestrians** on the footpaths:
+  - men in shirts with trousers or lungis, women in sarees, with swinging arms and legs
+  - people standing by shops near markets
+  - They follow connected footpaths and reappear around you as you ride.
+  - About 130 walkers plus 40 standing on High; 55 plus 15 on Low.
+
+**Bikes** (B key, or the bike button)
+
+| Bike | Type | Top speed | 0–100 km/h |
+|---|---|---|---|
+| Hyper 350R | 350 cc track replica: faceted fairing, winglets, gold forks, twin titanium exhausts | 300 km/h | 2.6 s |
+| Superbike 1000RR | flagship superbike with livery stripe | 285 km/h | 2.8 s |
+| Naked 650 | streetfighter: trellis frame, exposed engine, round LED headlight | 220 km/h | 3.4 s |
+| Adventure 800 | tall tourer: beak fender, screen, crash bars, aluminium panniers + top box | 205 km/h | 4.1 s |
+| Street Sport 300 | sport bike | 170 km/h | 4.3 s |
+| Highway Cruiser 400 | cruiser | 140 km/h | 6.0 s |
+| City Commuter 150 | everyday motorcycle (default) | 110 km/h | 7.7 s |
+| Urban Scooter 125 | step-through scooter | 90 km/h | 8.7 s |
+| Aero Road / Trail Mountain / City Roadster | bicycles | 55 / 38 / 28 km/h | |
+
+These speeds and accelerations are tuned for game feel; a real 350 cc bike can't reach 300 km/h.
+
+- **Premium finish:**
+  - clear-coated metallic paint that reflects the sky, plus chrome, polished alloy, rubber and leather materials
+  - coloured brake calipers, LED lights, a dashboard screen and a glossy helmet with tinted visor
+- **On screen:** the picker shows top speed and 0–100 (bicycles: 0–20). Speed lines appear above ~110 km/h, except with reduced motion.
+- **Each bike** has its own acceleration and engine sound, plus 8 colours to choose from.
+- **Details:** working brake light, Bangladeshi-style number plate in Bangla, mirrors and dashboard (seen from the helmet view).
+- **Bicycles:** the rider actually pedals; the legs follow the crank.
+- **Saving:** the choice is remembered per vehicle.
+- **Speed slider:** goes up to the chosen bike's top speed.
 - **Sky and light:** a gradient sky with a sun or moon, and warm haze at every time of day. Shadows are on in High quality.
 - **Draw calls:** merged geometry and instancing keep the scene to about 25 draw calls.
 
 **How riding feels**
 - **Auto-ride speed:** you pick a cruising speed, and the rider brakes for corners, speed humps and the destination, then accelerates out. Corner speed uses a comfortable sideways acceleration for each vehicle.
+- **In traffic:**
+  - The rider keeps to the left lane.
+  - When a slower vehicle is ahead, it overtakes if the way is clear: through the other same-direction lane on two-lane avenues, otherwise toward the centre line. If not clear, it slows and follows.
+  - After ~5 s stuck behind something, it squeezes past, as Dhaka bikes do.
+  - Auto-ride stops at red lights. It continues through amber only when too close to stop safely.
 - **Physical cues:**
   - bumps over speed humps
   - the nose dips under braking
@@ -128,6 +196,10 @@ Press **Ride** after choosing a route. The ride code and three.js (~930 KB uncom
   - light vibration
   - the field of view widens with speed
   - Reduced-motion users get none of the vibration or bumps.
+- **Zoom (mouse wheel, pinch, ➕/➖ under the minimap, or `[` `]`):**
+  - The camera lifts smoothly from behind the bike to a high aerial view of the whole neighbourhood.
+  - Far scenery (every building, the lake, parks and trees) is included, and the fog and shadows widen to match.
+  - A green "you are here" ring and arrow mark the rider when zoomed out.
 - **Cameras (V):** a low chase camera at chest height, or a **helmet view** showing handlebars, mirrors and speedometer.
 - **Free mode:** ride anywhere with W A S D or the arrow keys, or the on-screen joystick on touch screens. "Back to route" (or F) returns to the nearest point on the route.
 
@@ -137,6 +209,26 @@ Press **Ride** after choosing a route. The ride code and three.js (~930 KB uncom
 - **Minimap:** north-up, about 700 m across.
 - **Landmark pop-ups:** shown when you pass within 80 m of a landmark.
 - **Arrival:** a card with "Ride again" or "Back to map".
+
+**Graphics**
+- **Physically based materials** throughout, plus **image-based lighting**: the sky is baked into a reflection map, so paint, chrome, glass windows and vehicles reflect it.
+- **Physical sky** with Rayleigh and Mie scattering and drifting clouds; its brightness is capped so the sun doesn't wash out the frame. Night uses a gradient sky with stars and a moon.
+- **Procedural textures:**
+  - asphalt with grain, cracks, repair patches, oil stains and darker wheel tracks
+  - 40 cm paver tiles on footpaths
+  - patchy grass and dirt
+  - a roughness map so window glass is shiny and plaster matte
+- **Trees:** three-lobe crowns.
+- **HD extras:** ambient occlusion (soft contact shadows) and bloom on lights. The bloom threshold is set per time of day, so only lights glow and sunlit walls don't.
+
+**Crashes**
+- **What you can hit (free ride, where you steer):** any vehicle (moving or parked), buildings and boundary walls. In auto-ride the rider just stops on contact, since you aren't steering.
+- **Small bumps:** below ~12 km/h closing speed, you just stop.
+- **Real crashes:**
+  - the bike falls, slides to a stop and the camera jolts (no jolt with reduced motion)
+  - an impact thud, metal clangs and a scrape play
+  - the vehicle you hit stops and honks
+- **Afterwards:** a card shows what you hit and the impact speed. "Get up and ride on" (Enter or R) puts you back on the road (or steps you back from the wall) and clears traffic from the spot.
 
 **Lighting and sound**
 - **Time of day (T):** Auto (follows the device clock), Morning, Noon, Evening or Night.
@@ -153,6 +245,9 @@ Press **Ride** after choosing a route. The ride code and three.js (~930 KB uncom
 | Space | Pause / ride |
 | W A S D / arrows | Free ride (steer, accelerate, brake) |
 | F | Toggle free ride / back to route |
+| B | Choose bike and colour |
+| `[` / `]` | Zoom out (up to an aerial view) / zoom in |
+| Enter / R | Get up after a crash |
 | V | Chase camera / helmet view |
 | Q | Graphics quality High / Low |
 | + / − | Speed |
@@ -266,7 +361,11 @@ src/
     rideWorld.ts              local projection, buildings, speed profile, lighting presets
     streetDetail.ts           footpaths, markings, walls, trees, lamps, poles + wires, signs
     textures.ts               canvas-drawn facades, Bangla signs, glow sprite
-    rideSound.ts              synthesized engine + Dhaka street soundscape
+    rideSound.ts              synthesized engines (per bike) + Dhaka street soundscape + traffic honks
+    bikes.tsx                 bike catalogue, detailed bike + rider models (pedalling IK)
+    traffic.tsx               traffic simulation (left-hand lanes, following, junctions, signals) + instanced vehicles
+    signals.tsx               signalled junctions, two-phase cycle, poles + lamps
+    pedestrians.tsx           walking/standing people on footpaths (instanced, animated limbs)
 ```
 
 ## Licenses
@@ -283,6 +382,7 @@ src/
 | 3D models (motorcycle, bicycle, riders, landmark markers) | Original: built procedurally in code (`src/ride/RideScene.tsx`) from basic shapes; no external model files. Same license as this project |
 | Textures (facades, signs) | Original: drawn at runtime on canvas (`src/ride/textures.ts`); sign text is generic, no real brands |
 | Sounds | Original: synthesized at runtime with Web Audio; no audio files bundled |
+| Bikes, traffic vehicles, number plate | Original: procedural geometry and canvas drawing; generic designs, no real makes or brands |
 
 ## Known limitations
 
@@ -294,10 +394,15 @@ src/
 - **Bangla names:** some landmark names are manual translations (flagged above). Roads without a Bangla name in OSM show their English name, except numbered roads ("Road 71" → "সড়ক ৭১").
 - **Offline:** the app needs the network for its first load. There is no service worker yet.
 - **Ride mode:**
-  - The ground is flat (no elevation), with no water, traffic or pedestrians yet.
+  - The ground is flat (no elevation), with no water.
+  - Pedestrians don't cross roads, and vehicles don't yield to them.
+  - Signal locations are inferred from road classes, not real signal data. Real Dhaka junctions are often run by traffic police instead.
+  - **Traffic limits:**
+    - No collisions: vehicles can overlap at junctions.
+    - No traffic lights or lane changes, except your own overtaking.
   - Trees, walls, poles and signs are placed procedurally along roads, not from real survey data.
   - Speed humps are placed by a fixed rule on straight stretches, not at their real locations.
-  - Free mode has no collisions; you can ride through buildings.
+  - Collisions use footprints and simple boxes, not detailed shapes. Auto-ride doesn't collide with buildings (OSM footprints sometimes overlap roads), only with vehicles.
   - Only buildings near the route are drawn.
   - The camera can pass through tall buildings on tight corners.
 - **Performance:** 30+ fps on mid-range Android is the target, but it has only been tested with desktop emulation so far (see Ride mode).

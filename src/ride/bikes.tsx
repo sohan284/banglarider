@@ -7,12 +7,12 @@
  */
 
 import { useFrame } from "@react-three/fiber";
-import { useMemo, useRef, type RefObject } from "react";
+import { createContext, useContext, useMemo, useRef, type RefObject } from "react";
 import * as THREE from "three";
 import type { Vehicle } from "@/lib/routing";
 
 export type V3 = [number, number, number];
-export type EngineSound = "commuter" | "sport" | "scooter" | "cruiser" | "bicycle";
+export type EngineSound = "commuter" | "sport" | "scooter" | "cruiser" | "hyper" | "superbike" | "naked" | "adventure" | "bicycle";
 
 export interface BikeSpec {
   id: string;
@@ -22,6 +22,8 @@ export interface BikeSpec {
   /** Top speed (km/h) and acceleration (m/s²). */
   maxKmh: number;
   accel: number;
+  /** Hardest braking used by auto-ride (m/s²). */
+  brake: number;
   /** Rear wheel radius (for wheel spin). */
   wheelR: number;
   sound: EngineSound;
@@ -30,13 +32,19 @@ export interface BikeSpec {
 }
 
 export const BIKES: BikeSpec[] = [
-  { id: "commuter", vehicle: "motorcycle", name: { en: "City Commuter 150", bn: "সিটি কমিউটার ১৫০" }, blurb: { en: "Everyday Dhaka bike", bn: "রোজকার ঢাকার বাইক" }, maxKmh: 105, accel: 2.8, wheelR: 0.31, sound: "commuter", eye: { y: 1.6, z: 0.5 } },
-  { id: "sport", vehicle: "motorcycle", name: { en: "Street Sport 300", bn: "স্ট্রিট স্পোর্ট ৩০০" }, blurb: { en: "Fast, low and loud", bn: "দ্রুত ও শক্তিশালী" }, maxKmh: 170, accel: 5.2, wheelR: 0.32, sound: "sport", eye: { y: 1.42, z: 0.38 } },
-  { id: "scooter", vehicle: "motorcycle", name: { en: "Urban Scooter 125", bn: "আরবান স্কুটার ১২৫" }, blurb: { en: "Easy step-through", bn: "সহজ ও আরামদায়ক" }, maxKmh: 85, accel: 2.5, wheelR: 0.24, sound: "scooter", eye: { y: 1.62, z: 0.45 } },
-  { id: "cruiser", vehicle: "motorcycle", name: { en: "Highway Cruiser 400", bn: "হাইওয়ে ক্রুজার ৪০০" }, blurb: { en: "Laid-back and torquey", bn: "আরামে লম্বা পথ" }, maxKmh: 140, accel: 3.6, wheelR: 0.33, sound: "cruiser", eye: { y: 1.52, z: 0.45 } },
-  { id: "city", vehicle: "bicycle", name: { en: "City Roadster", bn: "সিটি রোডস্টার" }, blurb: { en: "Classic upright, with basket", bn: "ঝুড়িসহ ক্লাসিক সাইকেল" }, maxKmh: 28, accel: 1.0, wheelR: 0.34, sound: "bicycle", eye: { y: 1.72, z: 0.32 } },
-  { id: "mountain", vehicle: "bicycle", name: { en: "Trail Mountain", bn: "ট্রেইল মাউন্টেন" }, blurb: { en: "Fat tyres, suspension fork", bn: "মোটা টায়ার, সাসপেনশন" }, maxKmh: 38, accel: 1.3, wheelR: 0.34, sound: "bicycle", eye: { y: 1.62, z: 0.3 } },
-  { id: "road", vehicle: "bicycle", name: { en: "Aero Road", bn: "অ্যারো রোড" }, blurb: { en: "Light and quick", bn: "হালকা ও দ্রুত" }, maxKmh: 55, accel: 1.7, wheelR: 0.34, sound: "bicycle", eye: { y: 1.5, z: 0.24 } },
+  // Motorcycles, quickest first. Accelerations are "game feel", tuned for strong pickup.
+  { id: "hyper350", vehicle: "motorcycle", name: { en: "Hyper 350R", bn: "হাইপার ৩৫০আর" }, blurb: { en: "350 cc track missile", bn: "৩৫০ সিসি রেসিং বাইক" }, maxKmh: 300, accel: 10.5, brake: 9.5, wheelR: 0.32, sound: "hyper", eye: { y: 1.38, z: 0.36 } },
+  { id: "superbike", vehicle: "motorcycle", name: { en: "Superbike 1000RR", bn: "সুপারবাইক ১০০০আরআর" }, blurb: { en: "Flagship superbike", bn: "শীর্ষ সুপারবাইক" }, maxKmh: 285, accel: 9.8, brake: 9.5, wheelR: 0.32, sound: "superbike", eye: { y: 1.4, z: 0.38 } },
+  { id: "naked", vehicle: "motorcycle", name: { en: "Naked 650", bn: "নেকেড ৬৫০" }, blurb: { en: "Streetfighter, instant torque", bn: "স্ট্রিটফাইটার, তুমুল টর্ক" }, maxKmh: 220, accel: 8.2, brake: 8.5, wheelR: 0.32, sound: "naked", eye: { y: 1.56, z: 0.42 } },
+  { id: "adventure", vehicle: "motorcycle", name: { en: "Adventure 800", bn: "অ্যাডভেঞ্চার ৮০০" }, blurb: { en: "Tall touring explorer", bn: "লম্বা ভ্রমণের বাইক" }, maxKmh: 205, accel: 6.8, brake: 8, wheelR: 0.34, sound: "adventure", eye: { y: 1.75, z: 0.42 } },
+  { id: "sport", vehicle: "motorcycle", name: { en: "Street Sport 300", bn: "স্ট্রিট স্পোর্ট ৩০০" }, blurb: { en: "Fast, low and loud", bn: "দ্রুত ও শক্তিশালী" }, maxKmh: 170, accel: 6.5, brake: 8, wheelR: 0.32, sound: "sport", eye: { y: 1.42, z: 0.38 } },
+  { id: "cruiser", vehicle: "motorcycle", name: { en: "Highway Cruiser 400", bn: "হাইওয়ে ক্রুজার ৪০০" }, blurb: { en: "Laid-back and torquey", bn: "আরামে লম্বা পথ" }, maxKmh: 140, accel: 4.6, brake: 6.5, wheelR: 0.33, sound: "cruiser", eye: { y: 1.52, z: 0.45 } },
+  { id: "commuter", vehicle: "motorcycle", name: { en: "City Commuter 150", bn: "সিটি কমিউটার ১৫০" }, blurb: { en: "Everyday Dhaka bike", bn: "রোজকার ঢাকার বাইক" }, maxKmh: 110, accel: 3.6, brake: 6, wheelR: 0.31, sound: "commuter", eye: { y: 1.6, z: 0.5 } },
+  { id: "scooter", vehicle: "motorcycle", name: { en: "Urban Scooter 125", bn: "আরবান স্কুটার ১২৫" }, blurb: { en: "Easy step-through", bn: "সহজ ও আরামদায়ক" }, maxKmh: 90, accel: 3.2, brake: 5.5, wheelR: 0.24, sound: "scooter", eye: { y: 1.62, z: 0.45 } },
+  // Bicycles
+  { id: "road", vehicle: "bicycle", name: { en: "Aero Road", bn: "অ্যারো রোড" }, blurb: { en: "Light and quick", bn: "হালকা ও দ্রুত" }, maxKmh: 55, accel: 2.0, brake: 4, wheelR: 0.34, sound: "bicycle", eye: { y: 1.5, z: 0.24 } },
+  { id: "mountain", vehicle: "bicycle", name: { en: "Trail Mountain", bn: "ট্রেইল মাউন্টেন" }, blurb: { en: "Fat tyres, suspension fork", bn: "মোটা টায়ার, সাসপেনশন" }, maxKmh: 38, accel: 1.5, brake: 3.5, wheelR: 0.34, sound: "bicycle", eye: { y: 1.62, z: 0.3 } },
+  { id: "city", vehicle: "bicycle", name: { en: "City Roadster", bn: "সিটি রোডস্টার" }, blurb: { en: "Classic upright, with basket", bn: "ঝুড়িসহ ক্লাসিক সাইকেল" }, maxKmh: 28, accel: 1.2, brake: 3, wheelR: 0.34, sound: "bicycle", eye: { y: 1.72, z: 0.32 } },
 ];
 
 export const BIKE_COLORS = ["#c8102e", "#1f4fa0", "#161616", "#f2f2f2", "#0f8a5f", "#f2b705", "#ff6f00", "#7b1fa2"];
@@ -45,7 +53,29 @@ export function bikesFor(vehicle: Vehicle): BikeSpec[] {
   return BIKES.filter((b) => b.vehicle === vehicle);
 }
 export function getBike(id: string | null | undefined, vehicle: Vehicle): BikeSpec {
-  return BIKES.find((b) => b.id === id && b.vehicle === vehicle) ?? bikesFor(vehicle)[0];
+  // Default: the everyday commuter / city bicycle, not the fastest.
+  return BIKES.find((b) => b.id === id && b.vehicle === vehicle) ?? BIKES.find((b) => b.id === (vehicle === "motorcycle" ? "commuter" : "city"))!;
+}
+
+// ---------------------------------------------------------------------------
+// Premium materials, chosen from a part's colour:
+//   the bike's paint colour -> clear-coated metallic paint
+//   light greys -> chrome / polished alloy, mid greys -> dark alloy,
+//   near-black -> rubber / plastic, anything else -> leather / matte.
+// ---------------------------------------------------------------------------
+
+const PaintContext = createContext<string>("#c8102e");
+
+export function BMat({ c }: { c: string }) {
+  const paint = useContext(PaintContext);
+  const col = new THREE.Color(c);
+  const hsl = { h: 0, s: 0, l: 0 };
+  col.getHSL(hsl);
+  if (c.toLowerCase() === paint.toLowerCase()) return <meshPhysicalMaterial color={c} metalness={0.5} roughness={0.32} clearcoat={1} clearcoatRoughness={0.05} />;
+  if (hsl.s < 0.12 && hsl.l > 0.55) return <meshStandardMaterial color={c} metalness={1} roughness={0.14} />;
+  if (hsl.s < 0.12 && hsl.l > 0.22) return <meshStandardMaterial color={c} metalness={0.85} roughness={0.32} />;
+  if (hsl.l < 0.12) return <meshStandardMaterial color={c} metalness={0.05} roughness={0.78} />;
+  return <meshStandardMaterial color={c} metalness={0.05} roughness={0.55} />;
 }
 
 // ---------------------------------------------------------------------------
@@ -56,7 +86,7 @@ function Box({ s, p, c, r, basic }: { s: V3; p: V3; c: string; r?: V3; basic?: b
   return (
     <mesh position={p} rotation={r ?? [0, 0, 0]} castShadow>
       <boxGeometry args={s} />
-      {basic ? <meshBasicMaterial color={c} /> : <meshLambertMaterial color={c} />}
+      {basic ? <meshBasicMaterial color={c} /> : <BMat c={c} />}
     </mesh>
   );
 }
@@ -67,7 +97,7 @@ function Cyl({ r, l, p, axis = "y", c, seg = 12, basic }: { r: number; l: number
   return (
     <mesh position={p} rotation={rot} castShadow>
       <cylinderGeometry args={[r, r, l, seg]} />
-      {basic ? <meshBasicMaterial color={c} /> : <meshLambertMaterial color={c} />}
+      {basic ? <meshBasicMaterial color={c} /> : <BMat c={c} />}
     </mesh>
   );
 }
@@ -100,7 +130,7 @@ export function Rod({ from, to, r, c }: { from: V3; to: V3; r: number; c: string
   return (
     <mesh ref={ref} position={t.p} quaternion={t.q} castShadow>
       <cylinderGeometry args={[r, r, t.l, 8]} />
-      <meshLambertMaterial color={c} />
+      <BMat c={c} />
     </mesh>
   );
 }
@@ -114,17 +144,17 @@ function Wheel({ z, r, tyre, style, disc, wheelRef }: { z: number; r: number; ty
       <group ref={wheelRef}>
         <mesh rotation-y={Math.PI / 2} castShadow>
           <torusGeometry args={[r - tyre, tyre, 10, 28]} />
-          <meshLambertMaterial color="#181818" />
+          <BMat c="#181818" />
         </mesh>
         <mesh rotation-y={Math.PI / 2}>
           <torusGeometry args={[r - tyre * 1.9, style === "wire" || style === "mtb" ? 0.012 : 0.025, 6, 28]} />
-          <meshLambertMaterial color={style === "alloy" || style === "scooter" ? "#3a3d40" : "#b8bdc2"} />
+          <BMat c={style === "alloy" || style === "scooter" ? "#3a3d40" : "#b8bdc2"} />
         </mesh>
         <Cyl r={style === "wire" || style === "mtb" ? 0.03 : 0.06} l={0.1} p={[0, 0, 0]} axis="x" c="#8a8f94" />
         {Array.from({ length: spokes }, (_, i) => (
           <mesh key={i} rotation-x={(i * Math.PI) / spokes}>
             <boxGeometry args={[style === "wire" || style === "mtb" ? 0.006 : 0.03, (r - tyre * 1.9) * 2, style === "wire" || style === "mtb" ? 0.006 : 0.045]} />
-            <meshLambertMaterial color={style === "wire" || style === "mtb" ? "#c9ced3" : "#3a3d40"} />
+            <BMat c={style === "wire" || style === "mtb" ? "#c9ced3" : "#3a3d40"} />
           </mesh>
         ))}
       </group>
@@ -167,7 +197,7 @@ function Plate({ p, r }: { p: V3; r?: V3 }) {
   return (
     <mesh position={p} rotation={r ?? [0, 0, 0]}>
       <planeGeometry args={[0.22, 0.11]} />
-      <meshLambertMaterial map={tex} />
+      <meshStandardMaterial map={tex} roughness={0.5} />
     </mesh>
   );
 }
@@ -230,16 +260,17 @@ function RiderBody({ pose, crank }: { pose: RiderPose; crank?: RefObject<THREE.G
       <Rod from={[0, sy, sz]} to={shoulder} r={0.17} c={pose.shirt} />
       <mesh position={[0, sy + 0.02, sz]} castShadow>
         <boxGeometry args={[0.34, 0.16, 0.3]} />
-        <meshLambertMaterial color="#2b3440" />
+        <BMat c="#2b3440" />
       </mesh>
       {/* helmet with visor */}
       <mesh position={head} castShadow>
-        <sphereGeometry args={[0.155, 16, 12]} />
-        <meshLambertMaterial color={pose.helmet} />
+        <sphereGeometry args={[0.155, 20, 16]} />
+        <meshPhysicalMaterial color={pose.helmet} metalness={0.3} roughness={0.25} clearcoat={1} clearcoatRoughness={0.04} />
       </mesh>
-      <mesh position={[0, head[1] - 0.01, head[2] - 0.12]} rotation-x={0.2}>
-        <boxGeometry args={[0.2, 0.08, 0.06]} />
-        <meshLambertMaterial color="#1c2630" />
+      {/* tinted visor */}
+      <mesh position={[0, head[1] - 0.01, head[2] - 0.1]} rotation-x={0.15}>
+        <sphereGeometry args={[0.13, 16, 10, Math.PI * 1.25, Math.PI * 0.5, Math.PI * 0.35, Math.PI * 0.3]} />
+        <meshPhysicalMaterial color="#0e151c" metalness={0.6} roughness={0.05} clearcoat={1} side={THREE.DoubleSide} />
       </mesh>
       {/* arms with a slight elbow bend */}
       {[-1, 1].map((side) => {
@@ -252,7 +283,7 @@ function RiderBody({ pose, crank }: { pose: RiderPose; crank?: RefObject<THREE.G
             <Rod from={el} to={hd} r={0.045} c={pose.shirt} />
             <mesh position={hd}>
               <sphereGeometry args={[0.045, 8, 6]} />
-              <meshLambertMaterial color="#1b1b1b" />
+              <BMat c="#1b1b1b" />
             </mesh>
           </group>
         );
@@ -263,15 +294,15 @@ function RiderBody({ pose, crank }: { pose: RiderPose; crank?: RefObject<THREE.G
             <group key={i}>
               <mesh ref={(m) => void (legs.current[i * 2] = m)} castShadow>
                 <cylinderGeometry args={[0.065, 0.06, 1, 8]} />
-                <meshLambertMaterial color="#2b3440" />
+                <BMat c="#2b3440" />
               </mesh>
               <mesh ref={(m) => void (legs.current[i * 2 + 1] = m)} castShadow>
                 <cylinderGeometry args={[0.055, 0.045, 1, 8]} />
-                <meshLambertMaterial color="#2b3440" />
+                <BMat c="#2b3440" />
               </mesh>
               <mesh ref={(m) => void (feetRefs.current[i] = m)}>
                 <boxGeometry args={[0.09, 0.07, 0.22]} />
-                <meshLambertMaterial color="#141414" />
+                <BMat c="#141414" />
               </mesh>
             </group>
           ))
@@ -335,7 +366,7 @@ function Mirrors({ y, z, x }: { y: number; z: number; x: number }) {
           <Rod from={[s * (x - 0.1), y - 0.22, z + 0.04]} to={[s * x, y, z]} r={0.01} c="#2a2a2a" />
           <mesh position={[s * x, y + 0.02, z]} rotation-y={s * 0.2}>
             <cylinderGeometry args={[0.055, 0.055, 0.015, 14]} />
-            <meshLambertMaterial color="#9aa5ae" />
+            <BMat c="#9aa5ae" />
           </mesh>
         </group>
       ))}
@@ -479,7 +510,7 @@ function Cruiser(p: ModelProps) {
       {/* teardrop tank */}
       <mesh position={[0, 0.84, -0.22]} scale={[0.2, 0.15, 0.36]} castShadow>
         <sphereGeometry args={[1, 18, 12]} />
-        <meshLambertMaterial color={c} />
+        <BMat c={c} />
       </mesh>
       <Box s={[0.36, 0.1, 0.5]} p={[0, 0.7, 0.24]} c="#2a1a12" />
       <Box s={[0.3, 0.16, 0.3]} p={[0, 0.82, 0.52]} c="#2a1a12" r={[-0.4, 0, 0]} />
@@ -543,7 +574,7 @@ function BicycleFrame({ c, kind, wheelRef, crank, braking, showRider }: { c: str
           ))}
           <mesh position={[0.14, 1.04, -0.44]}>
             <sphereGeometry args={[0.033, 10, 8]} />
-            <meshLambertMaterial color="#c0c4c8" />
+            <BMat c="#c0c4c8" />
           </mesh>
         </>
       )}
@@ -561,11 +592,11 @@ function BicycleFrame({ c, kind, wheelRef, crank, braking, showRider }: { c: str
           {/* fenders, rear rack, front basket, chain guard */}
           <mesh position={[0, 0.34, -0.56]} rotation-y={Math.PI / 2}>
             <torusGeometry args={[0.38, 0.03, 4, 16, Math.PI * 0.9]} />
-            <meshLambertMaterial color={c} />
+            <BMat c={c} />
           </mesh>
           <mesh position={[0, 0.34, 0.54]} rotation={[0, Math.PI / 2, 0.4]}>
             <torusGeometry args={[0.38, 0.03, 4, 16, Math.PI * 0.9]} />
-            <meshLambertMaterial color={c} />
+            <BMat c={c} />
           </mesh>
           <Box s={[0.2, 0.02, 0.32]} p={[0, 0.74, 0.5]} c="#666" />
           <Box s={[0.32, 0.2, 0.24]} p={[0, 0.92, -0.62]} c="#6b5b3e" />
@@ -590,8 +621,202 @@ function BicycleFrame({ c, kind, wheelRef, crank, braking, showRider }: { c: str
   );
 }
 
+/** Faceted cone (nose / tail sections). Points along local -z when pitch = -PI/2. */
+function Cone({ r, h, p, pitch, c, sides = 4 }: { r: number; h: number; p: V3; pitch: number; c: string; sides?: number }) {
+  return (
+    <mesh position={p} rotation={[pitch, Math.PI / 4, 0, "XYZ"]} castShadow>
+      <coneGeometry args={[r, h, sides, 1]} />
+      <BMat c={c} />
+    </mesh>
+  );
+}
+
+/** Hyper 350R and Superbike 1000RR: full-fairing race replicas. */
+function Racer(p: ModelProps & { variant: "hyper" | "superbike" }) {
+  const c = p.color;
+  const hyper = p.variant === "hyper";
+  const accent = hyper ? "#141414" : "#f4f4f4";
+  const caliper = hyper ? "#e11d48" : "#d4a017";
+  const ti = "#8fa3c8"; // titanium exhaust (light, so it renders as polished metal)
+  return (
+    <group>
+      <Wheel z={-0.72} r={0.31} tyre={0.07} style="alloy" disc wheelRef={p.wheelRef(0)} />
+      <Wheel z={0.72} r={0.32} tyre={0.1} style="alloy" disc wheelRef={p.wheelRef(1)} />
+      {[-1, 1].map((s) => (
+        <group key={s}>
+          <Rod from={[s * 0.09, 0.31, -0.72]} to={[s * 0.085, 0.98, -0.5]} r={0.037} c="#c9a227" />
+          <Box s={[0.04, 0.11, 0.15]} p={[s * 0.1, 0.42, -0.64]} c={caliper} />
+        </group>
+      ))}
+      <Box s={[0.04, 0.1, 0.12]} p={[0.11, 0.42, 0.8]} c={caliper} />
+      <Box s={[0.15, 0.035, 0.42]} p={[0, 0.66, -0.72]} c={c} r={[0.18, 0, 0]} />
+      {/* fairing */}
+      <Cone r={0.26} h={0.42} p={[0, 0.95, -0.7]} pitch={-Math.PI / 2 - 0.18} c={c} />
+      <Box s={[0.44, 0.36, 0.5]} p={[0, 0.9, -0.42]} c={c} r={[0.5, 0, 0]} />
+      <Box s={[0.46, 0.44, 0.78]} p={[0, 0.66, -0.2]} c={c} />
+      <Box s={[0.47, 0.06, 0.62]} p={[0, 0.78, -0.2]} c={accent} />
+      <Box s={[0.36, 0.32, 0.04]} p={[0, 0.6, -0.52]} c="#202326" />
+      {hyper &&
+        [-1, 1].map((s) => <Box key={s} s={[0.18, 0.02, 0.13]} p={[s * 0.31, 0.88, -0.5]} c="#1a1c1f" r={[0, 0, s * 0.3]} />)}
+      <Box s={[0.36, 0.14, 0.55]} p={[0, 0.36, -0.15]} c="#1a1c1f" />
+      <mesh position={[0, 1.16, -0.6]} rotation-x={-0.75}>
+        <boxGeometry args={[0.3, 0.26, 0.012]} />
+        <meshPhysicalMaterial color="#1d2a35" roughness={0.04} metalness={0.2} transparent opacity={0.55} />
+      </mesh>
+      {[-1, 1].map((s) => (
+        <Box key={s} s={[0.12, 0.035, 0.03]} p={[s * 0.085, 0.93, -0.88]} c={p.headlightOn ? "#f4fbff" : "#dfe9f2"} r={[0.3, s * 0.35, 0]} basic />
+      ))}
+      {/* tank + livery, seat, sharp tail */}
+      <Box s={[0.38, 0.25, 0.5]} p={[0, 1.0, -0.06]} c={c} r={[0.2, 0, 0]} />
+      <Box s={[0.1, 0.262, 0.505]} p={[0, 1.0, -0.06]} c={accent} r={[0.2, 0, 0]} />
+      <Box s={[0.26, 0.07, 0.32]} p={[0, 0.97, 0.3]} c="#151515" />
+      <Cone r={0.17} h={0.55} p={[0, 1.05, 0.64]} pitch={Math.PI / 2 - 0.35} c={c} />
+      <TailLight p={[0, 1.1, 0.88]} s={[0.1, 0.03, 0.02]} braking={p.braking} />
+      <Plate p={[0, 0.72, 0.98]} r={[-0.3, 0, 0]} />
+      {/* clip-ons, mirrors, TFT */}
+      {[-1, 1].map((s) => (
+        <Rod key={s} from={[s * 0.1, 0.94, -0.44]} to={[s * 0.31, 0.92, -0.38]} r={0.02} c="#111" />
+      ))}
+      <Mirrors x={0.27} y={1.16} z={-0.6} />
+      <Box s={[0.2, 0.12, 0.04]} p={[0, 1.06, -0.48]} c="#16181a" r={[-0.8, 0, 0]} />
+      <Box s={[0.16, 0.09, 0.005]} p={[0, 1.07, -0.505]} c={hyper ? "#ff5a7a" : "#ffb347"} r={[-0.8, 0, 0]} basic />
+      {/* swingarm + exhaust */}
+      <Box s={[0.06, 0.12, 0.62]} p={[-0.12, 0.37, 0.42]} c="#9aa0a6" r={[-0.1, 0, 0]} />
+      <Box s={[0.06, 0.12, 0.62]} p={[0.12, 0.37, 0.42]} c="#9aa0a6" r={[-0.1, 0, 0]} />
+      {hyper ? (
+        [-1, 1].map((s) => <Cyl key={s} r={0.045} l={0.34} p={[s * 0.07, 0.98, 0.84]} axis="z" c={ti} />)
+      ) : (
+        <Cyl r={0.075} l={0.42} p={[0.21, 0.52, 0.55]} axis="z" c={ti} seg={6} />
+      )}
+      {p.showRider && (
+        <RiderBody pose={{ seat: [0, 0.99, 0.28], hands: [0.29, 0.93, -0.4], feet: [0.18, 0.52, 0.28], lean: 1.05, helmet: hyper ? "#111111" : "#f2f2f2", shirt: hyper ? "#1d1d1d" : "#22314a" }} />
+      )}
+    </group>
+  );
+}
+
+/** Naked 650 streetfighter: exposed engine, trellis frame, round LED headlight. */
+function Naked(p: ModelProps) {
+  const c = p.color;
+  const frame = "#c62828";
+  return (
+    <group>
+      <Wheel z={-0.7} r={0.31} tyre={0.075} style="alloy" disc wheelRef={p.wheelRef(0)} />
+      <Wheel z={0.68} r={0.32} tyre={0.095} style="alloy" disc wheelRef={p.wheelRef(1)} />
+      {[-1, 1].map((s) => (
+        <group key={s}>
+          <Rod from={[s * 0.09, 0.31, -0.7]} to={[s * 0.09, 1.0, -0.5]} r={0.036} c="#c9a227" />
+          <Box s={[0.04, 0.1, 0.14]} p={[s * 0.1, 0.42, -0.62]} c="#d4a017" />
+          {/* trellis frame */}
+          <Rod from={[s * 0.15, 0.98, -0.42]} to={[s * 0.16, 0.5, 0.15]} r={0.018} c={frame} />
+          <Rod from={[s * 0.15, 0.98, -0.42]} to={[s * 0.16, 0.86, 0.3]} r={0.018} c={frame} />
+          <Rod from={[s * 0.16, 0.5, 0.15]} to={[s * 0.16, 0.86, 0.3]} r={0.018} c={frame} />
+          <Rod from={[s * 0.16, 0.66, -0.15]} to={[s * 0.16, 0.92, -0.02]} r={0.016} c={frame} />
+        </group>
+      ))}
+      <Box s={[0.14, 0.035, 0.38]} p={[0, 0.64, -0.7]} c={c} r={[0.18, 0, 0]} />
+      {/* round LED headlight with chrome ring + flyscreen */}
+      <Cyl r={0.1} l={0.08} p={[0, 0.98, -0.62]} axis="z" c="#d8dde2" seg={20} />
+      <Headlight p={[0, 0.98, -0.67]} r={0.085} on={p.headlightOn} />
+      <Box s={[0.2, 0.1, 0.02]} p={[0, 1.1, -0.62]} c={c} r={[-0.5, 0, 0]} />
+      <Rod from={[-0.38, 1.1, -0.42]} to={[0.38, 1.1, -0.42]} r={0.017} c="#202020" />
+      <Rod from={[-0.4, 1.1, -0.42]} to={[-0.29, 1.1, -0.42]} r={0.03} c="#111" />
+      <Rod from={[0.29, 1.1, -0.42]} to={[0.4, 1.1, -0.42]} r={0.03} c="#111" />
+      <Mirrors x={0.33} y={1.33} z={-0.46} />
+      <Box s={[0.15, 0.1, 0.04]} p={[0, 1.12, -0.52]} c="#16181a" r={[-0.6, 0, 0]} />
+      <Box s={[0.12, 0.07, 0.005]} p={[0, 1.13, -0.545]} c="#7fe0ff" r={[-0.6, 0, 0]} basic />
+      {/* sculpted tank with scoops */}
+      <Box s={[0.38, 0.24, 0.5]} p={[0, 0.94, -0.16]} c={c} r={[0.15, 0, 0]} />
+      {[-1, 1].map((s) => (
+        <Box key={s} s={[0.06, 0.2, 0.3]} p={[s * 0.22, 0.86, -0.34]} c={c} r={[0.2, s * 0.25, 0]} />
+      ))}
+      {/* engine: big exposed block, cylinder fins, radiator */}
+      <Box s={[0.3, 0.32, 0.42]} p={[0, 0.46, -0.1]} c="#5a5f64" />
+      {[0, 1, 2, 3, 4].map((i) => (
+        <Box key={i} s={[0.32, 0.012, 0.22]} p={[0, 0.66 + i * 0.035, -0.24]} c="#7c8288" r={[0.45, 0, 0]} />
+      ))}
+      <Box s={[0.34, 0.3, 0.04]} p={[0, 0.66, -0.44]} c="#202326" />
+      {/* seat, short tail, belly exhaust */}
+      <Box s={[0.28, 0.08, 0.5]} p={[0, 0.88, 0.3]} c="#151515" />
+      <Cone r={0.14} h={0.36} p={[0, 0.95, 0.66]} pitch={Math.PI / 2 - 0.4} c={c} />
+      <TailLight p={[0, 0.98, 0.83]} s={[0.12, 0.03, 0.02]} braking={p.braking} />
+      <Plate p={[0, 0.66, 0.9]} r={[-0.2, 0, 0]} />
+      <Box s={[0.2, 0.14, 0.3]} p={[0.06, 0.3, 0.2]} c="#2a2c2e" />
+      <Cyl r={0.05} l={0.12} p={[0.12, 0.3, 0.38]} axis="z" c="#b8bec4" />
+      <Box s={[0.06, 0.12, 0.6]} p={[-0.12, 0.38, 0.4]} c="#9aa0a6" r={[-0.1, 0, 0]} />
+      {p.showRider && <RiderBody pose={{ seat: [0, 0.93, 0.3], hands: [0.36, 1.1, -0.42], feet: [0.2, 0.44, 0.1], lean: 0.35, helmet: "#0f172a", shirt: "#3a2c24" }} />}
+    </group>
+  );
+}
+
+/** Adventure 800: tall, beak fender, windscreen, crash bars, aluminium panniers. */
+function Adventure(p: ModelProps) {
+  const c = p.color;
+  const alu = "#b9bec4";
+  return (
+    <group>
+      <Wheel z={-0.84} r={0.36} tyre={0.07} style="wire" disc wheelRef={p.wheelRef(0)} />
+      <Wheel z={0.7} r={0.34} tyre={0.09} style="wire" disc wheelRef={p.wheelRef(1)} />
+      {[-1, 1].map((s) => (
+        <Rod key={s} from={[s * 0.09, 0.36, -0.84]} to={[s * 0.09, 1.12, -0.56]} r={0.04} c="#c9a227" />
+      ))}
+      {/* beak + high fender, twin headlights, tall screen */}
+      <Box s={[0.18, 0.04, 0.5]} p={[0, 0.98, -0.82]} c={c} r={[0.35, 0, 0]} />
+      <Box s={[0.3, 0.2, 0.16]} p={[0, 1.12, -0.66]} c={c} />
+      {[-1, 1].map((s) => (
+        <Box key={s} s={[0.08, 0.06, 0.03]} p={[s * 0.07, 1.12, -0.75]} c={p.headlightOn ? "#f4fbff" : "#dfe9f2"} basic />
+      ))}
+      <mesh position={[0, 1.38, -0.62]} rotation-x={-0.4}>
+        <boxGeometry args={[0.36, 0.38, 0.012]} />
+        <meshPhysicalMaterial color="#9fb6c8" roughness={0.03} metalness={0.1} transparent opacity={0.35} />
+      </mesh>
+      <Rod from={[-0.42, 1.25, -0.46]} to={[0.42, 1.25, -0.46]} r={0.018} c="#1f1f1f" />
+      {[-1, 1].map((s) => (
+        <Box key={s} s={[0.1, 0.06, 0.16]} p={[s * 0.42, 1.25, -0.5]} c="#1a1a1a" r={[0, s * 0.3, 0]} />
+      ))}
+      <Mirrors x={0.36} y={1.5} z={-0.5} />
+      <Box s={[0.18, 0.12, 0.04]} p={[0, 1.24, -0.58]} c="#16181a" r={[-0.5, 0, 0]} />
+      <Box s={[0.14, 0.09, 0.005]} p={[0, 1.25, -0.6]} c="#9ff0d4" r={[-0.5, 0, 0]} basic />
+      {/* big tank, two-tier seat, rack */}
+      <Box s={[0.46, 0.3, 0.55]} p={[0, 1.0, -0.2]} c={c} r={[0.12, 0, 0]} />
+      <Box s={[0.3, 0.1, 0.36]} p={[0, 1.02, 0.18]} c="#1a1a1a" />
+      <Box s={[0.28, 0.1, 0.32]} p={[0, 1.08, 0.5]} c="#1a1a1a" />
+      <Box s={[0.36, 0.04, 0.3]} p={[0, 1.08, 0.82]} c="#2a2a2a" />
+      <TailLight p={[0, 1.0, 0.98]} s={[0.12, 0.04, 0.02]} braking={p.braking} />
+      <Plate p={[0, 0.84, 1.0]} />
+      {/* engine, skid plate, crash bars */}
+      <Box s={[0.32, 0.34, 0.42]} p={[0, 0.58, -0.12]} c="#5a5f64" />
+      <Box s={[0.34, 0.05, 0.6]} p={[0, 0.34, -0.12]} c={alu} />
+      {[-1, 1].map((s) => (
+        <group key={s}>
+          <Rod from={[s * 0.18, 0.9, -0.42]} to={[s * 0.3, 0.6, -0.36]} r={0.018} c="#d8dde2" />
+          <Rod from={[s * 0.3, 0.6, -0.36]} to={[s * 0.24, 0.42, -0.1]} r={0.018} c="#d8dde2" />
+          {/* aluminium panniers */}
+          <Box s={[0.18, 0.38, 0.5]} p={[s * 0.36, 0.72, 0.6]} c={alu} />
+          <Box s={[0.185, 0.03, 0.505]} p={[s * 0.36, 0.9, 0.6]} c="#2a2a2a" />
+        </group>
+      ))}
+      <Box s={[0.4, 0.3, 0.4]} p={[0, 1.27, 0.84]} c={alu} />
+      <Cyl r={0.06} l={0.36} p={[0.24, 0.66, 0.4]} axis="z" c="#c4c8cc" />
+      {p.showRider && <RiderBody pose={{ seat: [0, 1.08, 0.24], hands: [0.4, 1.25, -0.44], feet: [0.2, 0.5, 0.0], lean: 0.12, helmet: "#f2b705", shirt: "#4a5a3a" }} />}
+    </group>
+  );
+}
+
 export function PlayerBike(props: ModelProps & { spec: BikeSpec }) {
+  return <PaintContext.Provider value={props.color}>{bikeFor(props)}</PaintContext.Provider>;
+}
+
+function bikeFor(props: ModelProps & { spec: BikeSpec }) {
   switch (props.spec.id) {
+    case "hyper350":
+      return <Racer {...props} variant="hyper" />;
+    case "superbike":
+      return <Racer {...props} variant="superbike" />;
+    case "naked":
+      return <Naked {...props} />;
+    case "adventure":
+      return <Adventure {...props} />;
     case "sport":
       return <Sport {...props} />;
     case "scooter":

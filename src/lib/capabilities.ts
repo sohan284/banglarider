@@ -3,7 +3,7 @@
  * Browser-only; call from effects / event handlers.
  */
 
-export type MapMode = "map" | "simple";
+export type MapMode = "diorama" | "map" | "simple";
 export type SimpleReason = "webgl" | "reducedMotion" | "lowEnd";
 
 export interface Capabilities {
@@ -40,7 +40,7 @@ export function detectCapabilities(): Capabilities {
     nav.connection?.saveData === true;
 
   const reason: SimpleReason | null = !webgl ? "webgl" : reducedMotion ? "reducedMotion" : lowEnd ? "lowEnd" : null;
-  return { webgl, reducedMotion, lowEnd, recommended: reason ? "simple" : "map", reason };
+  return { webgl, reducedMotion, lowEnd, recommended: reason ? "simple" : "diorama", reason };
 }
 
 const VIEW_KEY = "br:view";
@@ -49,7 +49,7 @@ const VIEW_KEY = "br:view";
 export function storedMapMode(): MapMode | null {
   try {
     const v = localStorage.getItem(VIEW_KEY);
-    return v === "map" || v === "simple" ? v : null;
+    return v === "diorama" || v === "map" || v === "simple" ? v : null;
   } catch {
     return null;
   }

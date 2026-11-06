@@ -13,6 +13,8 @@ import StatusBanner, { type Banner } from "@/components/StatusBanner";
 
 // MapLibre is large; load it only when the 3D map is actually used.
 const MapView = dynamic(() => import("@/components/MapView"), { ssr: false });
+// The 3D city (three.js) start screen, also lazy-loaded.
+const DioramaView = dynamic(() => import("@/components/DioramaView"), { ssr: false });
 // Ride mode pulls in three.js; it is only downloaded when the user presses Ride.
 const loadRideMode = () => import("@/ride/RideMode");
 const RideMode = dynamic(loadRideMode, { ssr: false, loading: () => <div className="fixed inset-0 z-50 bg-[#0b3d2e]" /> });
@@ -289,6 +291,23 @@ export default function RiderApp({ areaId }: { areaId?: string }) {
       </h1>
 
       <div className="absolute inset-0" aria-label={t("mapLabel", lang, { area: area.name[lang] })} role="region">
+        {data && mode === "diorama" && (
+          <DioramaView
+            area={area}
+            lang={lang}
+            roads={data.roads}
+            landmarks={landmarks}
+            start={start}
+            end={end}
+            route={route}
+            selectedStep={selectedStep}
+            reducedMotion={reducedMotion}
+            lowEnd={caps?.lowEnd ?? false}
+            active={!riding}
+            onPick={pickPoint}
+            onLandmark={pickLandmark}
+          />
+        )}
         {data && mode === "map" && (
           <MapView
             area={area}

@@ -132,3 +132,15 @@ body {
     transform: none;
   }
 }
+
+/* Ride mode: radial speed lines at high speed */
+.br-speedlines {
+  background: repeating-conic-gradient(from 0deg at 50% 55%, rgba(255, 255, 255, 0.55) 0deg 0.6deg, transparent 0.6deg 7deg);
+  mask-image: radial-gradient(circle at 50% 55%, transparent 0 28%, #000 70%);
+  -webkit-mask-image: radial-gradient(circle at 50% 55%, transparent 0 28%, #000 70%);
+  animation: br-speed 0.35s linear infinite;
+}
+@keyframes br-speed {
+  from { transform: scale(1) rotate(0deg); }
+  to { transform: scale(1.04) rotate(1.5deg); }
+}

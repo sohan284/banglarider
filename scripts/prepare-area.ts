@@ -4,11 +4,12 @@
  *
  *   public/data/<area>/roads.geojson      routable road centrelines
  *   public/data/<area>/buildings.geojson  footprints with heights (metres)
+ *   public/data/<area>/landuse.geojson    water (lakes), parks, pitches, grass
  *   public/data/<area>/landmarks.json     ~25 notable places, English + Bangla
  *   public/data/<area>/meta.json          source timestamp, counts, sizes
  *
  * Usage:
- *   npm run prepare-area -- <areaId> [--force] [--endpoint <url>] [--only roads,buildings,landmarks]
+ *   npm run prepare-area -- <areaId> [--force] [--endpoint <url>] [--only roads,buildings,landuse,landmarks]
  *
  *   --force      ignore the local download cache in .cache/overpass/
  *   --endpoint   use this Overpass endpoint first (others are tried after it)
@@ -31,7 +32,7 @@ const args = process.argv.slice(2);
 const areaId = args.find((a) => !a.startsWith("--") && !isFlagValue(a));
 const force = args.includes("--force");
 const endpointArg = flagValue("--endpoint");
-const only = new Set((flagValue("--only") ?? "roads,buildings,landmarks").split(","));
+const only = new Set((flagValue("--only") ?? "roads,buildings,landuse,landmarks").split(","));
 
 function flagValue(name: string): string | undefined {
   const i = args.indexOf(name);
@@ -501,6 +502,63 @@ out tags center;`,
 // Main
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Land use: water, parks, pitches, grass (for the 3D views)
+// ---------------------------------------------------------------------------
+
+type LanduseKind = "water" | "park" | "pitch" | "grass";
+
+function landuseKind(t: Record<string, string>): LanduseKind | null {
+  if (t.natural === "water" || t.water || t.waterway === "riverbank" || t.landuse === "reservoir" || t.landuse === "basin") return "water";
+  if (t.leisure === "pitch" || t.leisure === "stadium" || t.leisure === "track") return "pitch";
+  if (t.leisure === "park" || t.leisure === "garden" || t.leisure === "playground" || t.landuse === "recreation_ground" || t.landuse === "village_green") return "park";
+  if (["grass", "meadow", "forest", "cemetery"].includes(t.landuse) || t.natural === "wood" || t.natural === "scrub" || t.leisure === "golf_course") return "grass";
+  return null;
+}
+
+async function buildLanduse() {
+  const data = await overpass(
+    "landuse",
+    `[out:json][timeout:180];
+(
+  way["natural"~"^(water|wood|scrub)$"](${BB}); relation["natural"="water"](${BB});
+  way["water"](${BB}); way["waterway"="riverbank"](${BB});
+  way["landuse"~"^(reservoir|basin|grass|meadow|forest|cemetery|recreation_ground|village_green)$"](${BB});
+  way["leisure"~"^(park|garden|playground|pitch|stadium|track|golf_course)$"](${BB}); relation["leisure"="park"](${BB});
+);
+out tags geom;`,
+  );
+  const features: Feature<Polygon | MultiPolygon, { kind: LanduseKind }>[] = [];
+  const counts: Record<string, number> = {};
+  for (const el of data.elements) {
+    const kind = landuseKind(el.tags ?? {});
+    if (!kind) continue;
+    if (el.type === "way" && el.geometry) {
+      const ring = dedupe(el.geometry.filter((g): g is { lat: number; lon: number } => !!g).map((g) => pos(g, 5)));
+      if (ring.length < 4 || ring[0][0] !== ring[ring.length - 1][0] || ring[0][1] !== ring[ring.length - 1][1]) continue; // open ways aren't areas
+      features.push({ type: "Feature", properties: { kind }, geometry: { type: "Polygon", coordinates: [ring] } });
+    } else if (el.type === "relation" && el.members) {
+      const toCoords = (role: string) =>
+        el.members!.filter((m) => m.type === "way" && m.role === role && m.geometry).map((m) => dedupe(m.geometry!.map((g) => pos(g, 5))));
+      const outers = assembleRings(toCoords("outer"));
+      const inners = assembleRings(toCoords("inner"));
+      if (!outers.length) continue;
+      const polys: Position[][][] = outers.map((o, i) => (i === 0 ? [o, ...inners] : [o]));
+      features.push({
+        type: "Feature",
+        properties: { kind },
+        geometry: polys.length === 1 ? { type: "Polygon", coordinates: polys[0] } : { type: "MultiPolygon", coordinates: polys },
+      });
+    } else continue;
+    counts[kind] = (counts[kind] ?? 0) + 1;
+  }
+  // Water last so it draws over parks that contain it.
+  features.sort((a, b) => (a.properties.kind === "water" ? 1 : 0) - (b.properties.kind === "water" ? 1 : 0));
+  const bytes = await writeJson("landuse.geojson", { type: "FeatureCollection", features });
+  console.log(`  landuse.geojson: ${JSON.stringify(counts)}, ${(bytes / 1024).toFixed(0)} KB`);
+  return { counts, bytes };
+}
+
 async function main() {
   console.log(`Preparing "${area.id}" bbox=${area.bbox.join(",")}`);
   await mkdir(OUT_DIR, { recursive: true });
@@ -513,6 +571,8 @@ async function main() {
   const roads = only.has("roads") || only.has("landmarks") ? await buildRoads() : null;
   console.log("Buildings…");
   const buildings = only.has("buildings") ? await buildBuildings() : null;
+  console.log("Land use…");
+  const landuse = only.has("landuse") ? await buildLanduse() : null;
   console.log("Landmarks…");
   const landmarks = only.has("landmarks") && roads ? await buildLandmarks(roads.fc) : null;
 
@@ -525,6 +585,7 @@ async function main() {
     attribution: "© OpenStreetMap contributors (ODbL 1.0)",
     ...(roads && { roads: { features: roads.fc.features.length, bytes: roads.bytes } }),
     ...(buildings && { buildings }),
+    ...(landuse && { landuse }),
     ...(landmarks && { landmarks }),
   };
   await writeJson("meta.json", meta);

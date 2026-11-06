@@ -12,6 +12,7 @@
 import * as THREE from "three";
 import type { LngLat } from "@/config/areas";
 import type { Roads } from "@/lib/routing";
+import type { Stand, Walkway } from "@/ride/pedestrians";
 import { GeometryWriter, makeNearRoute, ROAD_WIDTH, type Projector, type Quality, type RoutePath } from "@/ride/rideWorld";
 
 export interface Instance {
@@ -31,6 +32,8 @@ export interface StreetDetail {
   footpaths: THREE.BufferGeometry;
   /** Plot boundary walls and gates (render double-sided). */
   walls: THREE.BufferGeometry;
+  /** Wall + gate line segments [x1,z1,x2,z2,...] for collisions. */
+  wallSegs: number[];
   /** Overhead electric wires (line segments). */
   wires: THREE.BufferGeometry;
   /** Shop signs and billboards (UVs into the sign atlas). */
@@ -40,6 +43,10 @@ export interface StreetDetail {
   trees: Instance[];
   lamps: Instance[];
   poles: Instance[];
+  /** Footpath centre-lines for pedestrians. */
+  walkways: Walkway[];
+  /** Spots in front of shops where people stand. */
+  stands: Stand[];
 }
 
 /** Sign atlas layout: 2 columns × 6 rows. Cells 0-7 shop signs, 8-11 billboards. */
@@ -136,7 +143,8 @@ export function buildStreetDetail(roads: Roads, proj: Projector, path: RoutePath
   };
 
   const marks = new GeometryWriter();
-  const foot = new GeometryWriter();
+  const foot = new GeometryWriter(true);
+  const wallSegs: number[] = [];
   const walls = new GeometryWriter();
   const signs = new GeometryWriter(true);
   const posts = new GeometryWriter();
@@ -144,11 +152,13 @@ export function buildStreetDetail(roads: Roads, proj: Projector, path: RoutePath
   const trees: Instance[] = [];
   const lamps: Instance[] = [];
   const poles: Instance[] = [];
+  const walkways: Walkway[] = [];
+  const stands: Stand[] = [];
 
   const white = new THREE.Color("#e9e7df");
   const yellow = new THREE.Color("#e8b923");
   const black = new THREE.Color("#22201c");
-  const footColor = new THREE.Color("#a8a397");
+  const footColor = new THREE.Color("#ece7dc");
   const kerbColor = new THREE.Color("#cfcabd");
   const wallColors = ["#efe7d6", "#e6dccb", "#f2e9e1", "#dcd4c4", "#e9dfd0", "#d8d0c8"].map((c) => new THREE.Color(c));
   const gateColors = ["#4f6b5a", "#7a6048", "#55627a", "#8a7a62", "#6b6f73"].map((c) => new THREE.Color(c));
@@ -245,7 +255,23 @@ export function buildStreetDetail(roads: Roads, proj: Projector, path: RoutePath
           // ---- footpath top + kerb face ----
           const [ax, az] = at(p0, side * half), [bx, bz] = at(p1, side * half);
           const [cx, cz] = at(p1, side * (half + FOOTPATH_W)), [ex, ez] = at(p0, side * (half + FOOTPATH_W));
-          foot.quad([ax, 0.16, az], [bx, 0.16, bz], [cx, 0.16, cz], [ex, 0.16, ez], up, footColor);
+          {
+            // UVs in metres / 0.8 so the 40 cm pavers keep their size.
+            const a0 = (along + p0 * len) / 0.8, a1 = (along + p1 * len) / 0.8;
+            const w0 = 0, w1 = FOOTPATH_W / 0.8;
+            foot.quadV(
+              { p: [ax, 0.16, az], c: footColor, uv: [a0, w0] },
+              { p: [bx, 0.16, bz], c: footColor, uv: [a1, w0] },
+              { p: [cx, 0.16, cz], c: footColor, uv: [a1, w1] },
+              { p: [ex, 0.16, ez], c: footColor, uv: [a0, w1] },
+              up,
+            );
+          }
+          if ((p1 - p0) * len > 3) {
+            const [wx1, wz1] = at(p0, side * (half + FOOTPATH_W / 2));
+            const [wx2, wz2] = at(p1, side * (half + FOOTPATH_W / 2));
+            walkways.push({ x1: wx1, z1: wz1, x2: wx2, z2: wz2 });
+          }
           const kn = [-lx * side, 0, -lz * side]; // faces the road
           if (major && high) {
             // Painted black/yellow kerb stones, as on Dhaka's main roads.
@@ -278,7 +304,9 @@ export function buildStreetDetail(roads: Roads, proj: Projector, path: RoutePath
               if (isGate) {
                 const g = gateColors[Math.floor(rnd(wx1, wz1, 3) * gateColors.length)];
                 walls.quad([wx1, 0, wz1], [wx2, 0, wz2], [wx2, 2.4, wz2], [wx1, 2.4, wz1], kn, g);
+                wallSegs.push(wx1, wz1, wx2, wz2);
               } else {
+                wallSegs.push(wx1, wz1, wx2, wz2);
                 walls.quadV(
                   { p: [wx1, 0, wz1], c: wcBottom },
                   { p: [wx2, 0, wz2], c: wcBottom },
@@ -316,6 +344,8 @@ export function buildStreetDetail(roads: Roads, proj: Projector, path: RoutePath
                 const [sx, sz] = at(t, side * (half + FOOTPATH_W + 0.45));
                 const cell = Math.floor(rnd(sx, sz, 5) * SHOP_SIGNS);
                 addSign(sx, 2.9 + rnd(sx, sz, 6) * 0.8, sz, tx, tz, -lx * side, -lz * side, 3.4, 1.13, cell);
+                const [px, pz] = at(t, side * (half + FOOTPATH_W * 0.6));
+                stands.push({ x: px, z: pz, yaw: Math.atan2(lx * side, lz * side) });
               }
               nextSign[sideIdx] = d + 9 + rnd(d, side, 7) * 9;
             }
@@ -448,11 +478,14 @@ export function buildStreetDetail(roads: Roads, proj: Projector, path: RoutePath
     marks: marks.build(),
     footpaths: foot.build(),
     walls: walls.build(),
+    wallSegs,
     wires,
     signs: signs.build(),
     posts: posts.build(),
     trees,
     lamps,
     poles,
+    walkways,
+    stands,
   };
 }

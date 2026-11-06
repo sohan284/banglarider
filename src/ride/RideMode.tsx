@@ -14,11 +14,13 @@ import { digits, formatDistance, formatDuration, stepText, t, type Lang } from "
 import { VEHICLES, type Roads, type Route, type Vehicle } from "@/lib/routing";
 import { ManeuverIcon } from "@/components/DirectionsList";
 import { CATEGORY_ICON } from "@/components/ControlPanel";
-import RideScene, { createSim, type CameraView, type LocalLandmark, type RideSim } from "@/ride/RideScene";
+import RideScene, { createSim, type CameraView, type Crash, type LocalLandmark, type RideSim } from "@/ride/RideScene";
 import { RideSound } from "@/ride/rideSound";
 import { BIKE_COLORS, bikesFor, getBike } from "@/ride/bikes";
 import type { TrafficKind } from "@/ride/traffic";
-import { buildRideWorld, TIMES, timeOfDayNow, type BuildingsFC, type Quality, type RideWorld, type TimeOfDay } from "@/ride/rideWorld";
+import { buildRideWorld, TIMES, timeOfDayNow, type Quality, type RideWorld, type TimeOfDay } from "@/ride/rideWorld";
+import { loadCityData } from "@/lib/areaData";
+import { buildCityModel, type CityModel } from "@/lib3d/cityModel";
 
 interface Props {
   area: AreaConfig;
@@ -76,6 +78,8 @@ interface Hud {
   mode: RideSim["mode"];
   playing: boolean;
   done: boolean;
+  signal: RideSim["signal"];
+  crash: Crash | null;
 }
 
 export default function RideMode(props: Props) {
@@ -105,8 +109,16 @@ export default function RideMode(props: Props) {
     return q === "low" || q === "high" ? q : props.lowEnd || coarse ? "low" : "high";
   });
   const [view, setView] = useState<CameraView>(() => (readPref("br:view3d") === "helmet" ? "helmet" : "chase"));
-  const buildingsRef = useRef<BuildingsFC | null>(null);
-  const [hud, setHud] = useState<Hud>({ s: 0, v: 0, mode: "route", playing: false, done: false });
+  const [city, setCity] = useState<CityModel | null>(null);
+  /** Camera zoom shared with the 3D scene: 0 = chase camera, 1 = aerial. */
+  const camZoom = useRef({ value: 0 });
+  const lastSignal = useRef<string | null>(null);
+  const langRef = useRef(lang);
+  useEffect(() => {
+    langRef.current = lang;
+  }, [lang]);
+  const [spoken, setSpoken] = useState("");
+  const [hud, setHud] = useState<Hud>({ s: 0, v: 0, mode: "route", playing: false, done: false, signal: null, crash: null });
   const [popup, setPopup] = useState<Landmark | null>(null);
   const sim = useRef<RideSim>(createSim(speed, bike.maxKmh, bike.accel));
   const sound = useRef<RideSound | null>(null);
@@ -122,13 +134,8 @@ export default function RideMode(props: Props) {
     let cancelled = false;
     (async () => {
       try {
-        let buildings = buildingsRef.current;
-        if (!buildings) {
-          const res = await fetch(props.area.data.buildings);
-          if (!res.ok) throw new Error(`HTTP ${res.status}`);
-          buildings = (await res.json()) as BuildingsFC;
-          buildingsRef.current = buildings;
-        }
+        // Shared with the 3D city view, so it's usually already downloaded.
+        const { buildings, landuse } = await loadCityData(props.area);
         if (cancelled) return;
         setLoadStage({ key: "building3d", n: buildings.features.length });
         // Let the loading text paint before the (synchronous) geometry build.
@@ -141,6 +148,15 @@ export default function RideMode(props: Props) {
           return w;
         });
         if (!props.reducedMotion && sim.current.s === 0 && !sim.current.done) sim.current.playing = true;
+        // Then the rest of the neighbourhood, for zooming out (built after the ride starts).
+        await new Promise((r) => setTimeout(r, 50));
+        if (cancelled) return;
+        const c = buildCityModel({ proj: w.proj, roads: props.roads, buildings, landuse, quality, excludeBuilding: w.nearDetail, roadY: 0.025, markings: false });
+        if (cancelled) return;
+        setCity((old) => {
+          if (old) for (const g of [old.buildings, old.roofDetail, old.roads, old.markings, old.water, old.shore, old.green]) g.dispose();
+          return c;
+        });
       } catch {
         if (!cancelled) setFailed(true);
       }
@@ -194,6 +210,30 @@ export default function RideMode(props: Props) {
   );
 
   /** A real vehicle honked: pan it to where it is relative to the rider. */
+  const onCrash = useCallback((c: Crash) => {
+    sound.current?.crash(c.impactKmh);
+  }, []);
+
+  /** Get back up after a crash: back onto the road (or out of the wall), with the spot cleared. */
+  const rideOn = useCallback(() => {
+    const s = sim.current;
+    if (!s.crash || !world) return;
+    s.crash = null;
+    s.v = 0;
+    if (s.mode === "route") {
+      s.s = Math.max(0, world.path.nearestS(s.x, s.z) - 2);
+      s.lat = -1.5;
+      const p = world.path.sample(s.s);
+      s.yaw = p.yaw;
+      s.playing = true;
+    } else {
+      // Step back the way we came.
+      s.x += Math.sin(s.yaw) * 2.5;
+      s.z += Math.cos(s.yaw) * 2.5;
+    }
+    world.traffic.clearAround(s.x, s.z, 9);
+  }, [world]);
+
   const onHonk = useCallback((kind: TrafficKind, x: number, z: number) => {
     const s = sim.current;
     const dx = x - s.x, dz = z - s.z;
@@ -219,7 +259,13 @@ export default function RideMode(props: Props) {
     if (!world) return;
     const id = setInterval(() => {
       const s = sim.current;
-      setHud({ s: s.mode === "route" ? s.s : world.path.nearestS(s.x, s.z), v: s.v, mode: s.mode, playing: s.playing, done: s.done });
+      setHud({ s: s.mode === "route" ? s.s : world.path.nearestS(s.x, s.z), v: s.v, mode: s.mode, playing: s.playing, done: s.done, signal: s.signal, crash: s.crash ? { ...s.crash } : null });
+      // Announce a red light once as it comes up (screen readers).
+      const sigNow = s.signal && s.signal.dist < 60 && s.mode === "route" ? s.signal.state : null;
+      if (sigNow !== lastSignal.current) {
+        lastSignal.current = sigNow;
+        if (sigNow === "red") setSpoken(t("signalRedAhead", langRef.current));
+      }
       let marketDist = Infinity;
       let mosqueDist = Infinity;
       for (const l of localLandmarks) {
@@ -288,6 +334,11 @@ export default function RideMode(props: Props) {
     });
   }, [setTodChoice]);
 
+  const pinch = useRef(new Map<number, { x: number; y: number }>());
+  const zoomStep = useCallback((d: number) => {
+    camZoom.current.value = Math.max(0, Math.min(1, camZoom.current.value + d));
+  }, []);
+
   const toggleQuality = useCallback(() => {
     setQuality((q) => {
       const next = q === "high" ? "low" : "high";
@@ -323,6 +374,13 @@ export default function RideMode(props: Props) {
     const isField = (el: EventTarget | null) => el instanceof HTMLInputElement || el instanceof HTMLSelectElement;
     const down = (e: KeyboardEvent) => {
       const k = e.key.toLowerCase();
+      if (sim.current.crash) {
+        if (k === "enter" || k === "r" || k === " ") {
+          e.preventDefault();
+          rideOn();
+        } else if (k === "escape") props.onExit();
+        return;
+      }
       if (["w", "a", "s", "d", "arrowup", "arrowdown", "arrowleft", "arrowright"].includes(k)) {
         if (k.startsWith("arrow") && isField(e.target)) return; // arrows still move a focused slider
         e.preventDefault();
@@ -342,6 +400,8 @@ export default function RideMode(props: Props) {
       else if (k === "v") toggleView();
       else if (k === "q") toggleQuality();
       else if (k === "b") setPickerOpen((o) => !o);
+      else if (k === "[") zoomStep(0.2);
+      else if (k === "]") zoomStep(-0.2);
       else if (k === "+" || k === "=") setSpeed((v) => Math.min(sim.current.maxKmh, v + 5));
       else if (k === "-") setSpeed((v) => Math.max(spec.minKmh, v - 5));
     };
@@ -355,7 +415,7 @@ export default function RideMode(props: Props) {
       window.removeEventListener("keydown", down);
       window.removeEventListener("keyup", up);
     };
-  }, [setFree, togglePlay, toggleSound, cycleTod, toggleView, toggleQuality, props, spec]);
+  }, [setFree, togglePlay, toggleSound, cycleTod, toggleView, toggleQuality, rideOn, zoomStep, props, spec]);
 
   // ---- derived HUD values ----
   const nextIdx = useMemo(() => {
@@ -370,7 +430,6 @@ export default function RideMode(props: Props) {
 
   // Announce each new instruction once for screen readers.
   const announcement = `${stepText(nextStep, lang)}. ${formatDistance(toNext, lang)}`;
-  const [spoken, setSpoken] = useState("");
   const lastIdx = useRef(-1);
   useEffect(() => {
     if (nextIdx !== lastIdx.current) {
@@ -417,26 +476,52 @@ export default function RideMode(props: Props) {
         </div>
       ) : (
         <SceneBoundary fallback={errorView}>
-          <div className="absolute inset-0">
+          <div
+            className="absolute inset-0 touch-none"
+            onWheel={(e) => {
+              camZoom.current.value = Math.max(0, Math.min(1, camZoom.current.value + e.deltaY * 0.0011));
+            }}
+            onPointerDown={(e) => {
+              if (e.pointerType !== "touch") return;
+              pinch.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
+            }}
+            onPointerMove={(e) => {
+              const pts = pinch.current;
+              if (!pts.has(e.pointerId)) return;
+              const before = [...pts.values()];
+              const d0 = before.length === 2 ? Math.hypot(before[0].x - before[1].x, before[0].y - before[1].y) : 0;
+              pts.set(e.pointerId, { x: e.clientX, y: e.clientY });
+              const after = [...pts.values()];
+              if (after.length === 2 && d0 > 0) {
+                const d1 = Math.hypot(after[0].x - after[1].x, after[0].y - after[1].y);
+                camZoom.current.value = Math.max(0, Math.min(1, camZoom.current.value + (d0 - d1) * 0.004));
+              }
+            }}
+            onPointerUp={(e) => pinch.current.delete(e.pointerId)}
+            onPointerCancel={(e) => pinch.current.delete(e.pointerId)}
+          >
             <RideScene
               world={world}
               vehicle={vehicle}
               bike={bike}
               bikeColor={bikeColor}
               onHonk={onHonk}
+              onCrash={onCrash}
               tod={tod}
               quality={quality}
               view={view}
               sim={sim}
               landmarks={localLandmarks}
               reducedMotion={props.reducedMotion}
+              city={city}
+              zoom={camZoom}
               onContextLost={() => setFailed(true)}
             />
           </div>
 
           {/* Top: next turn + progress */}
           <div className="pointer-events-none absolute inset-x-0 top-0 flex flex-col items-center gap-2 p-3 pt-[max(0.75rem,env(safe-area-inset-top))]">
-            {!isFree && !hud.done && (
+            {!isFree && !hud.done && !hud.crash && (
               <div className="pointer-events-auto flex w-full max-w-md items-center gap-3 rounded-2xl bg-[#006a4e]/95 px-4 py-3 shadow-lg">
                 <ManeuverIcon maneuver={nextStep.maneuver} className="size-9 shrink-0" />
                 <div className="min-w-0 flex-1">
@@ -468,11 +553,59 @@ export default function RideMode(props: Props) {
                 <div className="h-full rounded-full bg-[#2fd39b]" style={{ width: `${pct}%` }} />
               </div>
             </div>
+            {hud.signal && !isFree && !hud.done && (
+              <div className="flex items-center gap-2 rounded-full bg-black/60 px-3 py-1.5 text-xs font-semibold shadow backdrop-blur" aria-hidden>
+                <span className="flex flex-col gap-0.5 rounded bg-[#1b1d1f] p-0.5">
+                  {(["red", "yellow", "green"] as const).map((c) => (
+                    <span
+                      key={c}
+                      className="block size-2 rounded-full"
+                      style={{ background: hud.signal!.state === c ? { red: "#ff2a1f", yellow: "#ffc21a", green: "#22e07a" }[c] : "#333" }}
+                    />
+                  ))}
+                </span>
+                <span>
+                  {t(hud.signal.state === "red" ? "signalRed" : hud.signal.state === "yellow" ? "signalYellow" : "signalGreen", lang)} ·{" "}
+                  {digits(Math.ceil(hud.signal.remaining), lang)} {t("sec", lang)} · {formatDistance(Math.max(0, hud.signal.dist), lang)}
+                </span>
+              </div>
+            )}
           </div>
 
           <p className="sr-only" aria-live="polite">
             {spoken}
           </p>
+
+          {/* Speed lines above ~110 km/h */}
+          {!props.reducedMotion && !hud.crash && Math.abs(hud.v) * 3.6 > 110 && (
+            <div
+              aria-hidden
+              className="br-speedlines pointer-events-none absolute inset-0"
+              style={{ opacity: Math.min(0.55, (Math.abs(hud.v) * 3.6 - 110) / 220) }}
+            />
+          )}
+
+          {/* Crash */}
+          {hud.crash && (
+            <div className="absolute inset-0 grid place-items-center p-6" style={{ background: `rgba(120,0,0,${Math.max(0, 0.35 - hud.crash.t * 0.3)})` }}>
+              {hud.crash.t > 0.9 && (
+                <div role="alertdialog" aria-label={t("crashed", lang)} className="w-full max-w-sm rounded-2xl bg-white p-5 text-center text-[#17201c] shadow-2xl">
+                  <p className="text-4xl" aria-hidden>
+                    💥
+                  </p>
+                  <p className="mt-1 text-lg font-bold">{t("crashed", lang)}</p>
+                  <p className="mt-1 text-sm text-[#5d6b64]">
+                    {t(hud.crash.what === "vehicle" ? `hit_${hud.crash.kind ?? "car"}` : hud.crash.what === "wall" ? "hit_wall" : "hit_building", lang)} ·{" "}
+                    {t("impact", lang, { speed: digits(hud.crash.impactKmh, lang) })}
+                  </p>
+                  <button type="button" autoFocus onClick={rideOn} className="mt-4 w-full rounded-lg bg-[#006a4e] px-3 py-2.5 font-semibold text-white">
+                    {t("rideOn", lang)}
+                  </button>
+                  <p className="mt-2 text-xs text-[#5d6b64]">{t("rideOnHint", lang)}</p>
+                </div>
+              )}
+            </div>
+          )}
 
           {/* Landmark pop-up */}
           {popup && (
@@ -499,6 +632,15 @@ export default function RideMode(props: Props) {
             role="img"
             className="absolute right-3 top-[9.5rem] size-28 rounded-2xl border-2 border-white/80 shadow-lg md:top-[10.5rem] md:size-36"
           />
+          {/* Camera zoom: chase ⇄ aerial */}
+          <div className="absolute right-3 top-[17.5rem] flex flex-col overflow-hidden rounded-xl bg-white/90 shadow-lg md:top-[20.5rem]">
+            <button type="button" onClick={() => zoomStep(-0.2)} aria-label={t("rideZoomIn", lang)} title={`${t("rideZoomIn", lang)} (])`} className="grid size-10 place-items-center border-b border-black/10 text-xl text-[#17201c] hover:bg-white">
+              +
+            </button>
+            <button type="button" onClick={() => zoomStep(0.2)} aria-label={t("rideZoomOut", lang)} title={`${t("rideZoomOut", lang)} ([)`} className="grid size-10 place-items-center text-xl text-[#17201c] hover:bg-white">
+              −
+            </button>
+          </div>
 
           {/* Joystick (touch, free mode) */}
           {isFree && coarse && <Joystick sim={sim} label={t("joystick", lang)} />}
@@ -531,7 +673,7 @@ export default function RideMode(props: Props) {
               id="bike-picker"
               role="dialog"
               aria-label={t("chooseBike", lang)}
-              className="absolute inset-x-3 bottom-36 z-10 mx-auto max-w-md rounded-2xl bg-white p-4 text-[#17201c] shadow-2xl sm:bottom-40"
+              className="absolute inset-x-3 bottom-36 z-10 mx-auto max-h-[60dvh] max-w-md overflow-y-auto rounded-2xl bg-white p-4 text-[#17201c] shadow-2xl sm:bottom-40"
             >
               <div className="mb-3 flex items-center justify-between">
                 <p className="font-bold">{t("chooseBike", lang)}</p>
@@ -559,6 +701,12 @@ export default function RideMode(props: Props) {
                         <span className="block text-[#5d6b64]">{t("topSpeed", lang)}</span>
                         <span className="font-bold">
                           {digits(b.maxKmh, lang)} {t("kmh", lang)}
+                        </span>
+                        <span className="block text-[#5d6b64]">
+                          {t(vehicle === "motorcycle" ? "zeroTo100" : "zeroTo20", lang)}{" "}
+                          <span className="font-semibold text-[#17201c]">
+                            {digits(((vehicle === "motorcycle" ? 100 : 20) / 3.6 / b.accel).toFixed(1), lang)} {t("sec", lang)}
+                          </span>
                         </span>
                       </span>
                     </label>

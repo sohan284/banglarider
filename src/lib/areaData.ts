@@ -73,3 +73,31 @@ export function loadAreaData(area: AreaConfig): Promise<AreaData> {
   }
   return p;
 }
+
+// ---------------------------------------------------------------------------
+// Heavier 3D data (buildings + land use), shared by the 3D city view and ride
+// mode so it is only downloaded once.
+// ---------------------------------------------------------------------------
+
+import type { BuildingsFC, LanduseFC } from "@/lib3d/cityModel";
+
+export interface CityData {
+  buildings: BuildingsFC;
+  /** Optional: older data folders may not have land use yet. */
+  landuse: LanduseFC | null;
+}
+
+const cityCache = new Map<string, Promise<CityData>>();
+
+export function loadCityData(area: AreaConfig): Promise<CityData> {
+  let p = cityCache.get(area.id);
+  if (!p) {
+    p = Promise.all([getJson<BuildingsFC>(area.data.buildings), getJson<LanduseFC>(area.data.landuse).catch(() => null)]).then(([buildings, landuse]) => ({
+      buildings,
+      landuse,
+    }));
+    p.catch(() => cityCache.delete(area.id));
+    cityCache.set(area.id, p);
+  }
+  return p;
+}

@@ -13,6 +13,15 @@ import type { LngLat } from "@/config/areas";
 import type { Roads, Route, Vehicle } from "@/lib/routing";
 import { buildStreetDetail, type StreetDetail } from "@/ride/streetDetail";
 import { TrafficSim } from "@/ride/traffic";
+import { PedestrianSim } from "@/ride/pedestrians";
+import { findSignalJunctions, groupFor, junctionIndex, type SignalClock, type SignalJunction } from "@/ride/signals";
+
+export interface SignalStop {
+  /** Distance along the route / lane where to stop. */
+  s: number;
+  j: SignalJunction;
+  group: 0 | 1;
+}
 
 /** Bangladesh drives on the left: the rider keeps this far left of the road centre (m). */
 export const HOME_LANE = -1.5;
@@ -25,12 +34,16 @@ export type Quality = "low" | "high";
 
 export interface Projector {
   toLocal: (p: LngLat | Position) => [x: number, z: number];
+  toLngLat: (x: number, z: number) => LngLat;
 }
 
 export function makeProjector(origin: LngLat): Projector {
   const kx = Math.cos((origin[1] * Math.PI) / 180) * 111_320;
   const kz = 110_574;
-  return { toLocal: (p) => [(p[0] - origin[0]) * kx, -(p[1] - origin[1]) * kz] };
+  return {
+    toLocal: (p) => [(p[0] - origin[0]) * kx, -(p[1] - origin[1]) * kz],
+    toLngLat: (x, z) => [origin[0] + x / kx, origin[1] - z / kz],
+  };
 }
 
 const TAU = Math.PI * 2;
@@ -62,6 +75,8 @@ export class RoutePath {
   private limit: Float32Array = new Float32Array(0);
   /** Speed-breaker positions (metres along the route). */
   breakers: number[] = [];
+  /** Traffic-signal stop lines along the route. */
+  signalStops: SignalStop[] = [];
   readonly accel: number;
 
   /** Road width (m) at each route vertex, used to keep speed humps off main roads. */
@@ -138,6 +153,11 @@ export class RoutePath {
     return bestS;
   }
 
+  /** Road width (m) at distance s along the route. */
+  widthAt(s: number): number {
+    return this.widths[this.index(Math.max(0, Math.min(s, this.length)))];
+  }
+
   /** Speed limit (m/s) at s, from corners, speed breakers and the stop at the end. */
   limitAt(s: number): number {
     const i = Math.max(0, Math.min(this.limit.length - 1, Math.round(s)));
@@ -154,7 +174,7 @@ export class RoutePath {
   private buildSpeedProfile() {
     const dyn = VEHICLE_DYNAMICS[this.vehicle];
     const n = Math.max(2, Math.ceil(this.length) + 1);
-    const lim = new Float32Array(n).fill(60);
+    const lim = new Float32Array(n).fill(90); // up to ~320 km/h on long straights
     const window = 9;
     const turnAt = new Float32Array(n);
     for (let i = 0; i < n; i++) {
@@ -280,6 +300,7 @@ export class GeometryWriter {
 export function ribbon(w: GeometryWriter, pts: [number, number][], width: number, y: number, color: THREE.Color) {
   const up = [0, 1, 0];
   const h = width / 2;
+  let along = 0;
   for (let i = 0; i < pts.length - 1; i++) {
     const [x1, z1] = pts[i];
     const [x2, z2] = pts[i + 1];
@@ -287,14 +308,108 @@ export function ribbon(w: GeometryWriter, pts: [number, number][], width: number
     if (len < 0.01) continue;
     const nx = (-(z2 - z1) / len) * h;
     const nz = ((x2 - x1) / len) * h;
-    w.quad([x1 + nx, y, z1 + nz], [x2 + nx, y, z2 + nz], [x2 - nx, y, z2 - nz], [x1 - nx, y, z1 - nz], up, color);
+    // UVs (when enabled): u across the road 0..1, v along it in units of 8 m.
+    const v1 = along / 8, v2 = (along + len) / 8;
+    w.quadV(
+      { p: [x1 + nx, y, z1 + nz], c: color, uv: [1, v1] },
+      { p: [x2 + nx, y, z2 + nz], c: color, uv: [1, v2] },
+      { p: [x2 - nx, y, z2 - nz], c: color, uv: [0, v2] },
+      { p: [x1 - nx, y, z1 - nz], c: color, uv: [0, v1] },
+      up,
+    );
+    along += len;
     if (i < pts.length - 2) {
+      const ux = (x2 - x1) / len, uz = (z2 - z1) / len;
+      const nnx = -uz, nnz = ux;
+      const rim = (a: number): Vert => {
+        const ox = Math.cos(a) * h, oz = Math.sin(a) * h;
+        return { p: [x2 + ox, y, z2 + oz], c: color, uv: [0.5 + (ox * nnx + oz * nnz) / width, (along + ox * ux + oz * uz) / 8] };
+      };
       for (let k = 0; k < 8; k++) {
-        const a1 = (k / 8) * TAU;
-        const a2 = ((k + 1) / 8) * TAU;
-        w.tri([x2, y, z2], [x2 + Math.cos(a1) * h, y, z2 + Math.sin(a1) * h], [x2 + Math.cos(a2) * h, y, z2 + Math.sin(a2) * h], up, color);
+        w.triV({ p: [x2, y, z2], c: color, uv: [0.5, along / 8] }, rim((k / 8) * TAU), rim(((k + 1) / 8) * TAU), up);
       }
     }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Collisions (free riding): building footprints and boundary walls
+// ---------------------------------------------------------------------------
+
+export interface Hit {
+  /** Unit normal pointing from the obstacle towards the rider. */
+  nx: number;
+  nz: number;
+  what: "building" | "wall";
+}
+
+export class CollisionGrid {
+  private cells = new Map<string, { rings: number[]; segs: number[] }>();
+  private rings: [number, number][][] = [];
+  private segs: number[] = [];
+  private static C = 20;
+  private cell(cx: number, cz: number) {
+    const k = `${cx},${cz}`;
+    return this.cells.get(k) ?? this.cells.set(k, { rings: [], segs: [] }).get(k)!;
+  }
+  private span(a: number, b: number) {
+    return [Math.floor(Math.min(a, b) / CollisionGrid.C), Math.floor(Math.max(a, b) / CollisionGrid.C)];
+  }
+  addRing(ring: [number, number][]) {
+    const id = this.rings.push(ring) - 1;
+    let x0 = Infinity, x1 = -Infinity, z0 = Infinity, z1 = -Infinity;
+    for (const [x, z] of ring) {
+      x0 = Math.min(x0, x); x1 = Math.max(x1, x); z0 = Math.min(z0, z); z1 = Math.max(z1, z);
+    }
+    const [cx0, cx1] = this.span(x0, x1), [cz0, cz1] = this.span(z0, z1);
+    for (let cx = cx0; cx <= cx1; cx++) for (let cz = cz0; cz <= cz1; cz++) this.cell(cx, cz).rings.push(id);
+  }
+  addSeg(x1: number, z1: number, x2: number, z2: number) {
+    const id = this.segs.push(x1, z1, x2, z2) / 4 - 1;
+    const [cx0, cx1] = this.span(x1, x2), [cz0, cz1] = this.span(z1, z2);
+    for (let cx = cx0; cx <= cx1; cx++) for (let cz = cz0; cz <= cz1; cz++) this.cell(cx, cz).segs.push(id);
+  }
+  /** Is a circle at (x, z) with radius r touching a building or wall? */
+  test(x: number, z: number, r: number): Hit | null {
+    const c = this.cells.get(`${Math.floor(x / CollisionGrid.C)},${Math.floor(z / CollisionGrid.C)}`);
+    if (!c) return null;
+    const closest = (ax: number, az: number, bx: number, bz: number) => {
+      const dx = bx - ax, dz = bz - az;
+      const t = Math.max(0, Math.min(1, ((x - ax) * dx + (z - az) * dz) / (dx * dx + dz * dz || 1)));
+      const px = ax + dx * t, pz = az + dz * t;
+      return { d: Math.hypot(x - px, z - pz), px, pz };
+    };
+    for (const id of c.rings) {
+      const ring = this.rings[id];
+      let inside = false;
+      let best = { d: Infinity, px: 0, pz: 0 };
+      for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+        const [xi, zi] = ring[i], [xj, zj] = ring[j];
+        if (zi > z !== zj > z && x < ((xj - xi) * (z - zi)) / (zj - zi) + xi) inside = !inside;
+        const cl = closest(xi, zi, xj, zj);
+        if (cl.d < best.d) best = cl;
+      }
+      if (inside || best.d < r) {
+        let nx = x - best.px, nz = z - best.pz;
+        const l = Math.hypot(nx, nz) || 1;
+        nx /= l;
+        nz /= l;
+        if (inside) {
+          nx = -nx;
+          nz = -nz;
+        }
+        return { nx, nz, what: "building" };
+      }
+    }
+    for (const id of c.segs) {
+      const s = this.segs;
+      const cl = closest(s[id * 4], s[id * 4 + 1], s[id * 4 + 2], s[id * 4 + 3]);
+      if (cl.d < r + 0.15) {
+        const l = cl.d || 1;
+        return { nx: (x - cl.px) / l, nz: (z - cl.pz) / l, what: "wall" };
+      }
+    }
+    return null;
   }
 }
 
@@ -320,8 +435,15 @@ export interface RideWorld {
   buildingCount: number;
   detail: StreetDetail;
   traffic: TrafficSim;
+  pedestrians: PedestrianSim;
+  signals: SignalJunction[];
+  clock: SignalClock;
   /** Extent of the scene (for the ground plane). */
   radius: number;
+  /** Buildings + boundary walls, for crashes in free riding. */
+  collision: CollisionGrid;
+  /** True within the detailed corridor around the route (used to avoid duplicating distant scenery). */
+  nearDetail: (x: number, z: number) => boolean;
 }
 
 export type BuildingsFC = FeatureCollection<Polygon | MultiPolygon, { h: number; mh?: number }>;
@@ -356,9 +478,9 @@ export function buildRideWorld(
   const near = makeNearRoute(path, radius);
 
   // Roads
-  const rw = new GeometryWriter();
-  const major = new THREE.Color("#4f5357");
-  const minor = new THREE.Color("#63676b");
+  const rw = new GeometryWriter(true);
+  const major = new THREE.Color("#7c8084");
+  const minor = new THREE.Color("#8e9296");
   for (const f of roads.features) {
     const pts = f.geometry.coordinates.map((c) => proj.toLocal(c));
     if (!pts.some(([x, z]) => near(x, z))) continue;
@@ -384,6 +506,7 @@ export function buildRideWorld(
   const tank = new THREE.Color("#3d4a57");
   const tankAlt = new THREE.Color("#2b6cb0");
   let count = 0;
+  const collision = new CollisionGrid();
 
   const addPolygon = (rings: Position[][], h: number, base: number, seed: number) => {
     const outer = rings[0].map((c) => proj.toLocal(c));
@@ -400,6 +523,7 @@ export function buildRideWorld(
       area += x1 * z2 - x2 * z1;
     }
     if (area < 0) ring.reverse();
+    if (base < 2) collision.addRing(ring);
 
     // Random atlas offset per building so lit-window patterns differ.
     const offU = ((seed * 7) % 4) / 4;
@@ -461,6 +585,22 @@ export function buildRideWorld(
   for (let i = 0; i < path.xs.length; i++) maxR = Math.max(maxR, Math.hypot(path.xs[i], path.zs[i]));
 
   const detail = buildStreetDetail(roads, proj, path, quality, opts.markets);
+  for (let i = 0; i < detail.wallSegs.length; i += 4) collision.addSeg(detail.wallSegs[i], detail.wallSegs[i + 1], detail.wallSegs[i + 2], detail.wallSegs[i + 3]);
+
+  // Traffic signals near the route, and where the route has to stop for them.
+  const signals = findSignalJunctions(roads, proj, makeNearRoute(path, 260));
+  const signalByKey = junctionIndex(roads, proj, signals);
+  const seen = new Set<SignalJunction>();
+  route.coords.forEach((c, i) => {
+    const j = signalByKey.get(`${c[0]},${c[1]}`);
+    if (!j || seen.has(j) || i === 0) return;
+    seen.add(j);
+    const at = route.cumDist[i];
+    const stop = at - j.r;
+    if (stop < 5) return; // starting inside the junction: no stop
+    path.signalStops.push({ s: stop, j, group: groupFor(j, path.heading(at - 6, 4)) });
+  });
+  path.signalStops.sort((a, b) => a.s - b.s);
 
   return {
     path,
@@ -471,8 +611,13 @@ export function buildRideWorld(
     roofs: roofs.build(),
     buildingCount: count,
     detail,
-    traffic: new TrafficSim(roads, proj, path, quality),
+    traffic: new TrafficSim(roads, proj, path, quality, signalByKey),
+    pedestrians: new PedestrianSim(detail.walkways, detail.stands, path.point(0), quality),
+    signals,
+    clock: { t: 0 },
     radius: maxR + radius + 200,
+    collision,
+    nearDetail: near,
   };
 }
 
@@ -510,12 +655,20 @@ export interface Lighting {
   nightGlow: number;
   /** Sun / moon disc colour. */
   disc: string;
+  /** Tone-mapping exposure and environment (reflection) strength. */
+  exposure: number;
+  envIntensity: number;
+  /** Physical sky parameters (null at night: a starless gradient is used). */
+  sky: { turbidity: number; rayleigh: number; mie: number; mieG: number } | null;
+  bloom: number;
+  /** Linear brightness above which pixels glow (high in daylight so sunlit walls don't bloom). */
+  bloomThreshold: number;
 }
 
 // Dhaka air is rarely crystal clear: warm haze near the horizon at every time of day.
 export const LIGHTING: Record<TimeOfDay, Lighting> = {
-  morning: { zenith: "#8fb4d8", horizon: "#f2d6b3", fog: "#e9d3b8", fogNear: 90, fogFar: 520, ground: "#a3a088", sun: "#ffd6a0", sunIntensity: 1.8, sunDir: [80, 40, -30], hemiSky: "#ffe6c8", hemiGround: "#6b6656", hemiIntensity: 1.15, headlight: false, nightGlow: 0, disc: "#ffe2b0" },
-  noon: { zenith: "#7fb2e0", horizon: "#dcdccf", fog: "#d6d6c8", fogNear: 110, fogFar: 600, ground: "#9da98a", sun: "#fffaf0", sunIntensity: 2.3, sunDir: [25, 100, 15], hemiSky: "#e3f0ff", hemiGround: "#707a62", hemiIntensity: 1.2, headlight: false, nightGlow: 0, disc: "#fffbe8" },
-  evening: { zenith: "#5d6fa3", horizon: "#f1a46d", fog: "#d99a74", fogNear: 80, fogFar: 480, ground: "#8e8470", sun: "#ff9a58", sunIntensity: 1.5, sunDir: [-85, 22, 20], hemiSky: "#ffc59e", hemiGround: "#5e5045", hemiIntensity: 0.95, headlight: true, nightGlow: 0.55, disc: "#ffb070" },
-  night: { zenith: "#070d22", horizon: "#24304f", fog: "#1a2340", fogNear: 60, fogFar: 420, ground: "#353d33", sun: "#9fb2ff", sunIntensity: 0.55, sunDir: [-30, 80, -40], hemiSky: "#7d90cc", hemiGround: "#2a2f24", hemiIntensity: 1.5, headlight: true, nightGlow: 1, disc: "#e8eeff" },
+  morning: { zenith: "#8fb4d8", horizon: "#f2d6b3", fog: "#e9d3b8", fogNear: 90, fogFar: 520, ground: "#a3a088", sun: "#ffd6a0", sunIntensity: 3.0, sunDir: [80, 40, -30], hemiSky: "#ffe6c8", hemiGround: "#6b6656", hemiIntensity: 1.15, headlight: false, nightGlow: 0, disc: "#ffe2b0", exposure: 0.5, envIntensity: 0.3, sky: { turbidity: 9, rayleigh: 2.2, mie: 0.012, mieG: 0.85 }, bloom: 0.12, bloomThreshold: 3 },
+  noon: { zenith: "#7fb2e0", horizon: "#dcdccf", fog: "#d6d6c8", fogNear: 110, fogFar: 600, ground: "#9da98a", sun: "#fff2dc", sunIntensity: 4.4, sunDir: [35, 90, 25], hemiSky: "#f2f0e6", hemiGround: "#7a7a62", hemiIntensity: 1.2, headlight: false, nightGlow: 0, disc: "#fffbe8", exposure: 0.5, envIntensity: 0.22, sky: { turbidity: 8, rayleigh: 1.4, mie: 0.008, mieG: 0.8 }, bloom: 0.1, bloomThreshold: 3 },
+  evening: { zenith: "#5d6fa3", horizon: "#f1a46d", fog: "#d99a74", fogNear: 80, fogFar: 480, ground: "#8e8470", sun: "#ff9a58", sunIntensity: 1.9, sunDir: [-85, 22, 20], hemiSky: "#ffc59e", hemiGround: "#5e5045", hemiIntensity: 0.95, headlight: true, nightGlow: 0.55, disc: "#ffb070", exposure: 0.55, envIntensity: 0.4, sky: { turbidity: 10, rayleigh: 3, mie: 0.02, mieG: 0.9 }, bloom: 0.3, bloomThreshold: 3 },
+  night: { zenith: "#070d22", horizon: "#24304f", fog: "#1a2340", fogNear: 60, fogFar: 420, ground: "#353d33", sun: "#9fb2ff", sunIntensity: 0.55, sunDir: [-30, 80, -40], hemiSky: "#7d90cc", hemiGround: "#2a2f24", hemiIntensity: 1.5, headlight: true, nightGlow: 1, disc: "#e8eeff", exposure: 1.0, envIntensity: 0.35, sky: null, bloom: 0.7, bloomThreshold: 0.9 },
 };

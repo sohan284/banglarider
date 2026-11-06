@@ -1,4 +1,5 @@
 "use client";
+/* eslint-disable react-hooks/immutability -- traffic and the signal clock are mutable sim state advanced every frame (standard react-three-fiber pattern) */
 
 /**
  * Ambient Dhaka traffic (simulated, not live data): cycle rickshaws, CNG
@@ -16,7 +17,8 @@ import { useLayoutEffect, useMemo, useRef } from "react";
 import * as THREE from "three";
 import { mergeGeometries } from "three/examples/jsm/utils/BufferGeometryUtils.js";
 import type { Roads } from "@/lib/routing";
-import { angleDiff, makeNearRoute, ROAD_WIDTH, type Projector, type Quality, type RoutePath } from "@/ride/rideWorld";
+import { angleDiff, makeNearRoute, ROAD_WIDTH, type Projector, type Quality, type RoutePath, type SignalStop } from "@/ride/rideWorld";
+import { groupFor, signalState, type SignalClock, type SignalJunction } from "@/ride/signals";
 
 export type TrafficKind = "rickshaw" | "cng" | "car" | "microbus" | "bus" | "motorbike";
 export const TRAFFIC_KINDS: TrafficKind[] = ["rickshaw", "cng", "car", "microbus", "bus", "motorbike"];
@@ -51,6 +53,8 @@ export interface Lane {
   dir: 1 | -1;
   major: boolean;
   bbox: [number, number, number, number];
+  /** Signal stop lines along this lane. */
+  stops: SignalStop[];
 }
 
 export interface TrafficVehicle {
@@ -72,6 +76,8 @@ export interface TrafficVehicle {
   tint: THREE.Color;
   blockedT: number;
   honkT: number;
+  /** Seconds a vehicle stays stopped after being hit. */
+  stunT: number;
 }
 
 export type HonkHandler = (kind: TrafficKind, x: number, z: number) => void;
@@ -92,7 +98,13 @@ export class TrafficSim {
   private nearT = 99;
   private random = rnd(20261106);
 
-  constructor(roads: Roads, proj: Projector, path: RoutePath, quality: Quality) {
+  constructor(
+    roads: Roads,
+    proj: Projector,
+    path: RoutePath,
+    quality: Quality,
+    private junctions: Map<string, SignalJunction> = new Map(),
+  ) {
     const near = makeNearRoute(path, quality === "high" ? 260 : 190);
     roads.features.forEach((f, roadIdx) => {
       const p = f.properties;
@@ -112,7 +124,7 @@ export class TrafficSim {
         for (let k = 0; k < n; k++) {
           // Left-hand traffic: lanes sit to the LEFT of the direction of travel.
           const off = oneway ? (k - (n - 1) / 2) * laneW : laneW * (k + 0.5);
-          this.addLane(offsetLine(seq, off), kseq[0], kseq[kseq.length - 1], roadIdx, dir, major);
+          this.addLane(offsetLine(seq, off), kseq, roadIdx, dir, major);
         }
       }
     });
@@ -145,14 +157,16 @@ export class TrafficSim {
         const spec = KIND[kind];
         this.vehicles.push({
           kind, lane: i, s, v: 0, vMax: 0, next: -1, x, z, yaw: pos.yaw + (this.random() - 0.5) * 0.15,
-          dx: x, dz: z, dyaw: pos.yaw, parked: true, tint: new THREE.Color(spec.tints[Math.floor(this.random() * spec.tints.length)]), blockedT: 0, honkT: 0,
+          dx: x, dz: z, dyaw: pos.yaw, parked: true, tint: new THREE.Color(spec.tints[Math.floor(this.random() * spec.tints.length)]), blockedT: 0, honkT: 0, stunT: 0,
         });
         placed++;
       }
     }
   }
 
-  private addLane(pts: [number, number][], startKey: string, endKey: string, road: number, dir: 1 | -1, major: boolean) {
+  private addLane(pts: [number, number][], keys: string[], road: number, dir: 1 | -1, major: boolean) {
+    const startKey = keys[0];
+    const endKey = keys[keys.length - 1];
     if (pts.length < 2) return;
     const arr = new Float32Array(pts.length * 2);
     const cum = new Float32Array(pts.length);
@@ -165,8 +179,18 @@ export class TrafficSim {
     });
     const len = cum[cum.length - 1];
     if (len < 8) return;
+    const stops: SignalStop[] = [];
+    const seen = new Set<SignalJunction>();
+    keys.forEach((k, i) => {
+      const j = this.junctions.get(k);
+      if (!j || i === 0 || seen.has(j)) return;
+      seen.add(j);
+      const yaw = Math.atan2(-(pts[i][0] - pts[i - 1][0]), -(pts[i][1] - pts[i - 1][1]));
+      const s = cum[i] - j.r;
+      if (s > 2) stops.push({ s, j, group: groupFor(j, yaw) });
+    });
     const id = this.lanes.length;
-    this.lanes.push({ pts: arr, cum, len, startKey, endKey, road, dir, major, bbox: [minX, minZ, maxX, maxZ] });
+    this.lanes.push({ pts: arr, cum, len, startKey, endKey, road, dir, major, bbox: [minX, minZ, maxX, maxZ], stops });
     (this.byStart.get(startKey) ?? this.byStart.set(startKey, []).get(startKey)!).push(id);
   }
 
@@ -223,7 +247,7 @@ export class TrafficSim {
       const vMax = spec.v[0] + this.random() * (spec.v[1] - spec.v[0]);
       return {
         kind: k, lane, s, v: vMax * 0.8, vMax, next: -1, x: p.x, z: p.z, yaw: p.yaw, dx: p.x, dz: p.z, dyaw: p.yaw,
-        parked: false, tint: new THREE.Color(spec.tints[Math.floor(this.random() * spec.tints.length)]), blockedT: 0, honkT: 2 + this.random() * 4,
+        parked: false, tint: new THREE.Color(spec.tints[Math.floor(this.random() * spec.tints.length)]), blockedT: 0, honkT: 2 + this.random() * 4, stunT: 0,
       };
     }
     return null;
@@ -248,7 +272,32 @@ export class TrafficSim {
     return options[0];
   }
 
-  update(dt: number, rider: { x: number; z: number }, onHonk?: HonkHandler) {
+  /** Moves vehicles away from a spot (used when the rider gets back up after a crash). */
+  clearAround(x: number, z: number, r: number) {
+    for (const v of this.vehicles) {
+      if (Math.hypot(v.dx - x, v.dz - z) > r) continue;
+      if (v.parked) Object.assign(v, { x: 1e6, z: 1e6, dx: 1e6, dz: 1e6 });
+      else {
+        this.respawn(v, { x, z });
+        v.stunT = 0;
+      }
+    }
+  }
+
+  /** The vehicle (moving or parked) a circle at (x, z) with radius r overlaps, if any. */
+  hit(x: number, z: number, r: number): TrafficVehicle | null {
+    for (const v of this.vehicles) {
+      const dx = x - v.dx, dz = z - v.dz;
+      if (Math.abs(dx) > 7 || Math.abs(dz) > 7) continue;
+      const f = dx * -Math.sin(v.dyaw) + dz * -Math.cos(v.dyaw);
+      const l = dx * Math.cos(v.dyaw) - dz * Math.sin(v.dyaw);
+      const k = KIND[v.kind];
+      if (Math.abs(f) < k.len / 2 + r && Math.abs(l) < k.width / 2 + r) return v;
+    }
+    return null;
+  }
+
+  update(dt: number, rider: { x: number; z: number }, clock: SignalClock, onHonk?: HonkHandler) {
     this.nearT += dt;
     this.refreshNear(rider.x, rider.z);
 
@@ -265,6 +314,10 @@ export class TrafficSim {
       const L = this.lanes[v.lane];
       const spec = KIND[v.kind];
       let desired = v.vMax;
+      if (v.stunT > 0) {
+        v.stunT -= dt;
+        desired = 0;
+      }
 
       // Car following
       const list = byLane.get(v.lane)!;
@@ -284,6 +337,16 @@ export class TrafficSim {
         if (clear < safe) desired = Math.min(desired, Math.max(0, leader.v + (clear - 1) * 0.8));
       }
 
+      // Traffic signals: stop at the line on red (and on yellow if there's room to stop).
+      for (const st of L.stops) {
+        const gap = st.s - v.s;
+        if (gap < -0.5) continue;
+        if (gap > 40) break;
+        const sig = signalState(st.j, st.group, clock.t).state;
+        if (sig === "red" || (sig === "yellow" && gap > v.v * 1.2)) desired = Math.min(desired, Math.sqrt(2 * 3 * Math.max(0, gap - 0.5)));
+        break;
+      }
+
       // Slow down for turns at the end of the lane
       if (v.next === -1 && v.s > L.len - 20) v.next = this.chooseNext(v);
       if (v.next >= 0 && v.s > L.len - 14) {
@@ -296,7 +359,7 @@ export class TrafficSim {
       const rx = rider.x - v.x, rz = rider.z - v.z;
       const f = rx * fx + rz * fz;
       const lat = Math.abs(rx * fz - rz * fx);
-      if (f > 0 && f < 14 + spec.len / 2 && lat < spec.width / 2 + 0.7) {
+      if (f > 0 && f < 14 + spec.len / 2 && lat < spec.width / 2 + 0.45) {
         desired = Math.min(desired, Math.max(0, (f - spec.len / 2 - 3) * 0.8));
         v.blockedT += dt;
       } else v.blockedT = 0;
@@ -304,6 +367,11 @@ export class TrafficSim {
       if (v.blockedT > 1.2 && v.honkT <= 0) {
         onHonk?.(v.kind, v.x, v.z);
         v.honkT = 4 + this.random() * 5;
+      }
+      // Held up by the rider for a long time: it turns off somewhere (avoids standoffs).
+      if (v.blockedT > 6 && Math.hypot(v.x - rider.x, v.z - rider.z) > 4) {
+        this.respawn(v, rider);
+        continue;
       }
 
       // Integrate speed
@@ -511,7 +579,7 @@ function buildKind(kind: TrafficKind) {
 // Rendering
 // ---------------------------------------------------------------------------
 
-export function TrafficLayer({ sim, rider, onHonk }: { sim: TrafficSim; rider: React.RefObject<{ x: number; z: number }>; onHonk?: HonkHandler }) {
+export function TrafficLayer({ sim, rider, clock, onHonk }: { sim: TrafficSim; rider: React.RefObject<{ x: number; z: number }>; clock: SignalClock; onHonk?: HonkHandler }) {
   const geos = useMemo(() => Object.fromEntries(TRAFFIC_KINDS.map((k) => [k, buildKind(k)])) as Record<TrafficKind, { tint: THREE.BufferGeometry; trim: THREE.BufferGeometry }>, []);
   const groups = useMemo(() => {
     const g = Object.fromEntries(TRAFFIC_KINDS.map((k) => [k, [] as TrafficVehicle[]])) as Record<TrafficKind, TrafficVehicle[]>;
@@ -535,7 +603,8 @@ export function TrafficLayer({ sim, rider, onHonk }: { sim: TrafficSim; rider: R
 
   useFrame((_, rawDt) => {
     const dt = Math.min(rawDt, 0.1);
-    sim.update(dt, rider.current, onHonk);
+    clock.t += dt;
+    sim.update(dt, rider.current, clock, onHonk);
     for (const k of TRAFFIC_KINDS) {
       const mm = meshes.current[k];
       if (!mm) continue;
@@ -561,14 +630,14 @@ export function TrafficLayer({ sim, rider, onHonk }: { sim: TrafficSim; rider: R
               frustumCulled={false}
               castShadow
             >
-              <meshLambertMaterial vertexColors />
+              <meshStandardMaterial vertexColors roughness={0.38} metalness={0.35} side={THREE.DoubleSide} />
             </instancedMesh>
             <instancedMesh
               ref={(r) => void ((meshes.current[k] ??= { tint: null, trim: null }).trim = r)}
               args={[geos[k].trim, undefined, groups[k].length]}
               frustumCulled={false}
             >
-              <meshLambertMaterial vertexColors />
+              <meshStandardMaterial vertexColors roughness={0.55} metalness={0.2} />
             </instancedMesh>
           </group>
         ) : null,

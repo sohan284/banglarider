@@ -37,11 +37,15 @@ function toTexture(c: HTMLCanvasElement, repeat: boolean, anisotropy: number): T
  * Facade atlas. White-ish base (multiplied by each building's vertex colour),
  * window grilles, balconies with hanging laundry, AC units, floor slabs and grime.
  */
-export function makeFacadeTextures(anisotropy: number): { map: THREE.CanvasTexture; lit: THREE.CanvasTexture } {
+export function makeFacadeTextures(anisotropy: number): { map: THREE.CanvasTexture; lit: THREE.CanvasTexture; rough: THREE.CanvasTexture } {
   const S = 128; // one bay × one floor
   const N = 4;
   const [c, g] = canvas(S * N, S * N);
   const [e, ge] = canvas(S * N, S * N);
+  // Roughness: plaster is rough (white), glass is smooth (dark) so it reflects the sky.
+  const [rc, gr] = canvas(S * N, S * N);
+  gr.fillStyle = "#f2f2f2";
+  gr.fillRect(0, 0, S * N, S * N);
   const r = rand(7);
   g.fillStyle = "#ffffff";
   g.fillRect(0, 0, S * N, S * N);
@@ -75,6 +79,8 @@ export function makeFacadeTextures(anisotropy: number): { map: THREE.CanvasTextu
         g.fillRect(wx - 5, wy - 5, ww + 10, wh + 10);
         g.fillStyle = r() < 0.5 ? "#3f4b56" : "#4e5a63";
         g.fillRect(wx, wy, ww, wh);
+        gr.fillStyle = "#1e1e1e";
+        gr.fillRect(wx, wy, ww, wh);
         // reflection
         g.fillStyle = "rgba(255,255,255,0.12)";
         g.beginPath();
@@ -118,6 +124,8 @@ export function makeFacadeTextures(anisotropy: number): { map: THREE.CanvasTextu
         g.fillRect(wx, wy, ww, wh);
         g.fillStyle = "#7a8088";
         g.fillRect(wx + 18, wy + 8, ww - 36, wh - 30); // door
+        gr.fillStyle = "#3a3a3a";
+        gr.fillRect(wx + 18, wy + 8, ww - 36, wh - 30);
         // laundry line
         g.strokeStyle = "#333";
         g.lineWidth = 1;
@@ -148,7 +156,9 @@ export function makeFacadeTextures(anisotropy: number): { map: THREE.CanvasTextu
       }
     }
   }
-  return { map: toTexture(c, true, anisotropy), lit: toTexture(e, true, anisotropy) };
+  const rough = toTexture(rc, true, anisotropy);
+  rough.colorSpace = THREE.NoColorSpace;
+  return { map: toTexture(c, true, anisotropy), lit: toTexture(e, true, anisotropy), rough };
 }
 
 const SHOP_TEXTS: { bn: string; en: string; bg: string; fg: string }[] = [
@@ -229,4 +239,108 @@ export function makeGlowTexture(): THREE.CanvasTexture {
   const t = new THREE.CanvasTexture(c);
   t.colorSpace = THREE.SRGBColorSpace;
   return t;
+}
+
+/** Grey noise canvas helper: per-pixel grain + soft blotches. */
+function grain(g: CanvasRenderingContext2D, w: number, h: number, base: number, amp: number, r: () => number) {
+  const img = g.createImageData(w, h);
+  for (let i = 0; i < w * h; i++) {
+    const v = Math.max(0, Math.min(255, base + (r() - 0.5) * amp));
+    img.data[i * 4] = img.data[i * 4 + 1] = img.data[i * 4 + 2] = v;
+    img.data[i * 4 + 3] = 255;
+  }
+  g.putImageData(img, 0, 0);
+}
+
+/**
+ * Asphalt: grain, aggregate speckle, repair patches, cracks, oil stains and
+ * darker worn tyre tracks. u runs across the road (0..1), v along it (repeats).
+ * Returns colour + bump (grain height) textures.
+ */
+export function makeAsphaltTextures(anisotropy: number): { map: THREE.CanvasTexture; bump: THREE.CanvasTexture } {
+  const W = 512, H = 512;
+  const r = rand(11);
+  const [c, g] = canvas(W, H);
+  grain(g, W, H, 150, 40, r);
+  // wheel tracks: two per direction
+  for (const u of [0.18, 0.32, 0.68, 0.82]) {
+    const grad = g.createLinearGradient((u - 0.06) * W, 0, (u + 0.06) * W, 0);
+    grad.addColorStop(0, "rgba(0,0,0,0)");
+    grad.addColorStop(0.5, "rgba(20,20,22,0.18)");
+    grad.addColorStop(1, "rgba(0,0,0,0)");
+    g.fillStyle = grad;
+    g.fillRect((u - 0.06) * W, 0, 0.12 * W, H);
+  }
+  // repair patches
+  for (let i = 0; i < 5; i++) {
+    g.fillStyle = `rgba(${r() < 0.5 ? "30,30,32" : "120,118,112"},${0.12 + r() * 0.12})`;
+    g.fillRect(r() * W, r() * H, 30 + r() * 120, 20 + r() * 80);
+  }
+  // oil stains
+  for (let i = 0; i < 9; i++) {
+    const x = (0.25 + r() * 0.5) * W, y = r() * H, rad = 6 + r() * 22;
+    const grad = g.createRadialGradient(x, y, 0, x, y, rad);
+    grad.addColorStop(0, "rgba(10,10,12,0.35)");
+    grad.addColorStop(1, "rgba(10,10,12,0)");
+    g.fillStyle = grad;
+    g.fillRect(x - rad, y - rad, rad * 2, rad * 2);
+  }
+  // cracks
+  g.strokeStyle = "rgba(25,25,25,0.55)";
+  g.lineWidth = 1.2;
+  for (let i = 0; i < 14; i++) {
+    let x = r() * W, y = r() * H;
+    g.beginPath();
+    g.moveTo(x, y);
+    for (let k = 0; k < 8; k++) {
+      x += (r() - 0.5) * 30;
+      y += (r() - 0.3) * 30;
+      g.lineTo(x, y);
+    }
+    g.stroke();
+  }
+  const [bc, bg] = canvas(W, H);
+  grain(bg, W, H, 128, 120, rand(12));
+  const map = toTexture(c, true, anisotropy);
+  map.wrapS = THREE.ClampToEdgeWrapping;
+  const bump = toTexture(bc, true, anisotropy);
+  bump.colorSpace = THREE.NoColorSpace;
+  return { map, bump };
+}
+
+/** Footpath pavers (40 cm), slightly uneven colours with dark joints. UVs in metres / 0.8. */
+export function makePavingTexture(anisotropy: number): THREE.CanvasTexture {
+  const S = 256, n = 2;
+  const r = rand(21);
+  const [c, g] = canvas(S, S);
+  g.fillStyle = "#6f6b64";
+  g.fillRect(0, 0, S, S);
+  const cell = S / n;
+  for (let y = 0; y < n; y++)
+    for (let x = 0; x < n; x++) {
+      const l = 180 + r() * 40;
+      g.fillStyle = `rgb(${l},${l - 6},${l - 14})`;
+      g.fillRect(x * cell + 3, y * cell + 3, cell - 6, cell - 6);
+      for (let k = 0; k < 120; k++) {
+        g.fillStyle = `rgba(0,0,0,${r() * 0.08})`;
+        g.fillRect(x * cell + r() * cell, y * cell + r() * cell, 2, 2);
+      }
+    }
+  return toTexture(c, true, anisotropy);
+}
+
+/** Ground between plots: patchy grass and dusty earth. */
+export function makeGroundTexture(anisotropy: number): THREE.CanvasTexture {
+  const S = 256;
+  const r = rand(31);
+  const [c, g] = canvas(S, S);
+  g.fillStyle = "#8a8c6a";
+  g.fillRect(0, 0, S, S);
+  for (let i = 0; i < 1600; i++) {
+    const t = r();
+    g.fillStyle = t < 0.55 ? `rgba(70,100,45,${0.25 + r() * 0.3})` : t < 0.85 ? `rgba(150,130,95,${0.2 + r() * 0.3})` : `rgba(40,50,30,0.3)`;
+    const s = 2 + r() * 8;
+    g.fillRect(r() * S, r() * S, s, s * (0.5 + r()));
+  }
+  return toTexture(c, true, anisotropy);
 }
